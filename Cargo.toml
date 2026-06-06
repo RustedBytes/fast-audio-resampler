@@ -2,6 +2,14 @@
 name = "fast-audio-resampler"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
+authors = ["Yehor Smoliakov <egorsmkv@gmail.com>"]
+description = "Fast streaming audio resampler with SIMD-accelerated Intel and AMD x86 paths."
+license = "MIT"
+repository = "https://github.com/RustedBytes/fast-audio-resampler"
+readme = "README.md"
+keywords = ["audio", "resampler", "simd", "avx2", "wav"]
+categories = ["multimedia::audio", "algorithms"]
 
 [features]
 default = []
