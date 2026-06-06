@@ -2,7 +2,7 @@
 
 [![Crates.io Version](https://img.shields.io/crates/v/fast-audio-resampler)](https://crates.io/crates/fast-audio-resampler)
 
-Fast streaming audio resampling for Rust, focused on Intel and AMD x86/x86_64 CPUs.
+Fast streaming audio resampling for Rust, focused on x86/x86_64 and AArch64 ARM CPUs.
 
 The crate exposes a reusable library by default. WAV CLI support is optional and gated behind the `cli` feature so library users do not pull `hound`.
 
@@ -39,8 +39,8 @@ cargo run --features cli -- --in input.wav --out output.wav --rate 48000
 - Provides dedicated phase handling for exact `8000 <-> 16000` conversions.
 - Supports `f32` and `i16` sample paths.
 - Uses runtime CPU feature detection instead of CPU vendor checks.
-- Uses AVX2/FMA and AVX-512 intrinsics for `f32` where available.
-- Uses a Q15 fixed-point `i16` path with AVX2 `_mm256_madd_epi16` on supported CPUs.
+- Uses AVX2/FMA, AVX-512, and AArch64 NEON intrinsics for `f32` where available.
+- Uses a Q15 fixed-point `i16` path with AVX2 `_mm256_madd_epi16` or AArch64 NEON widening multiply on supported CPUs.
 - Stores FIR coefficients in phase-major aligned storage for cache-friendly reads.
 - Uses per-channel ring buffers for streaming history, avoiding steady-state buffer shifting.
 - Keeps the public API stable while hiding backend and buffer details internally.

@@ -127,6 +127,7 @@ fn parse_backend(value: &str) -> Result<Backend, Box<dyn std::error::Error>> {
         "scalar" => Ok(Backend::Scalar),
         "avx2" => Ok(Backend::Avx2),
         "avx512" => Ok(Backend::Avx512),
+        "neon" => Ok(Backend::Neon),
         _ => Err(format!("unknown backend: {value}").into()),
     }
 }
@@ -136,6 +137,16 @@ fn print_help() {
         "fast-audio-resampler --in input.wav --out output.wav --rate 48000 [--quality balanced] [--backend auto]\n\
          \n\
          quality: fast | balanced | best\n\
-         backend: auto | scalar | avx2 | avx512"
+         backend: auto | scalar | avx2 | avx512 | neon"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_backend_accepts_neon() {
+        assert_eq!(parse_backend("neon").unwrap(), Backend::Neon);
+    }
 }

@@ -56,7 +56,7 @@ resampler.finish(&mut output)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The `i16` path uses fixed-point Q15 coefficients and uses AVX2 integer multiply-add instructions on supported Intel and AMD CPUs.
+The `i16` path uses fixed-point Q15 coefficients and uses AVX2 or AArch64 NEON integer multiply instructions on supported CPUs.
 
 ## Chunked Processing
 
@@ -123,6 +123,7 @@ let mut output = Vec::with_capacity(resampler.required_output_capacity(input_fra
 - scalar fallback on all targets
 - AVX2/FMA on supported x86/x86_64 CPUs
 - AVX-512 for `f32` where available
+- AArch64 NEON on ARM CPUs
 
 Backend dispatch is based on CPU features, not CPU vendor strings.
 

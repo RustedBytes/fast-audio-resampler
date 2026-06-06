@@ -4,6 +4,7 @@ pub enum Backend {
     Scalar,
     Avx2,
     Avx512,
+    Neon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +12,7 @@ pub enum SelectedBackend {
     Scalar,
     Avx2,
     Avx512,
+    Neon,
 }
 
 impl SelectedBackend {
@@ -20,6 +22,7 @@ impl SelectedBackend {
             Self::Scalar => "scalar",
             Self::Avx2 => "avx2+fma",
             Self::Avx512 => "avx512f",
+            Self::Neon => "neon",
         }
     }
 }
@@ -31,8 +34,10 @@ impl Backend {
             Self::Scalar => Ok(SelectedBackend::Scalar),
             Self::Avx2 if avx2_available() => Ok(SelectedBackend::Avx2),
             Self::Avx512 if avx512_available() => Ok(SelectedBackend::Avx512),
+            Self::Neon if neon_available() => Ok(SelectedBackend::Neon),
             Self::Avx2 => Err(crate::Error::UnsupportedBackend("avx2+fma")),
             Self::Avx512 => Err(crate::Error::UnsupportedBackend("avx512f")),
+            Self::Neon => Err(crate::Error::UnsupportedBackend("neon")),
         }
     }
 }
@@ -44,6 +49,7 @@ pub(crate) fn dot_f32(backend: SelectedBackend, samples: &[f32], coeffs: &[f32])
         SelectedBackend::Scalar => scalar::dot_f32(samples, coeffs),
         SelectedBackend::Avx2 => x86::dot_f32_avx2(samples, coeffs),
         SelectedBackend::Avx512 => x86::dot_f32_avx512(samples, coeffs),
+        SelectedBackend::Neon => aarch64::dot_f32_neon(samples, coeffs),
     }
 }
 
@@ -55,6 +61,7 @@ pub(crate) fn dot_i16_q15(backend: SelectedBackend, samples: &[i16], coeffs: &[i
         SelectedBackend::Avx2 => x86::dot_i16_q15_avx2(samples, coeffs),
         SelectedBackend::Avx512 if avx2_available() => x86::dot_i16_q15_avx2(samples, coeffs),
         SelectedBackend::Avx512 => scalar::dot_i16_q15(samples, coeffs),
+        SelectedBackend::Neon => aarch64::dot_i16_q15_neon(samples, coeffs),
     };
     q15_acc_to_i16(acc)
 }
@@ -71,6 +78,8 @@ fn auto_select() -> SelectedBackend {
         SelectedBackend::Avx512
     } else if avx2_available() {
         SelectedBackend::Avx2
+    } else if neon_available() {
+        SelectedBackend::Neon
     } else {
         SelectedBackend::Scalar
     }
@@ -100,6 +109,18 @@ fn avx512_available() -> bool {
     }
 }
 
+#[inline]
+fn neon_available() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        true
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
 mod scalar {
     #[inline(always)]
     pub(crate) fn dot_f32(samples: &[f32], coeffs: &[f32]) -> f32 {
@@ -123,6 +144,77 @@ mod scalar {
             }
         }
         acc
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod aarch64 {
+    use std::arch::aarch64::*;
+
+    #[inline]
+    pub(crate) fn dot_f32_neon(samples: &[f32], coeffs: &[f32]) -> f32 {
+        unsafe { dot_f32_neon_inner(samples, coeffs) }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn dot_f32_neon_inner(samples: &[f32], coeffs: &[f32]) -> f32 {
+        let mut acc = vdupq_n_f32(0.0);
+        let chunks = samples.len() / 4;
+        for chunk in 0..chunks {
+            let i = chunk * 4;
+            let s = unsafe { vld1q_f32(samples.as_ptr().add(i)) };
+            let c = unsafe { vld1q_f32(coeffs.as_ptr().add(i)) };
+            acc = vfmaq_f32(acc, s, c);
+        }
+
+        let mut total = vaddvq_f32(acc);
+        for i in chunks * 4..samples.len() {
+            let sample = unsafe { *samples.get_unchecked(i) };
+            let coeff = unsafe { *coeffs.get_unchecked(i) };
+            total = sample.mul_add(coeff, total);
+        }
+        total
+    }
+
+    #[inline]
+    pub(crate) fn dot_i16_q15_neon(samples: &[i16], coeffs: &[i16]) -> i64 {
+        unsafe { dot_i16_q15_neon_inner(samples, coeffs) }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn dot_i16_q15_neon_inner(samples: &[i16], coeffs: &[i16]) -> i64 {
+        let mut acc = vdupq_n_s64(0);
+        let chunks = samples.len() / 8;
+        for chunk in 0..chunks {
+            let i = chunk * 8;
+            let s = unsafe { vld1q_s16(samples.as_ptr().add(i)) };
+            let c = unsafe { vld1q_s16(coeffs.as_ptr().add(i)) };
+            let products_low = vmull_s16(vget_low_s16(s), vget_low_s16(c));
+            let products_high = vmull_s16(vget_high_s16(s), vget_high_s16(c));
+            acc = vaddq_s64(acc, vpaddlq_s32(products_low));
+            acc = vaddq_s64(acc, vpaddlq_s32(products_high));
+        }
+
+        let mut total = vaddvq_s64(acc);
+        for i in chunks * 8..samples.len() {
+            let sample = unsafe { *samples.get_unchecked(i) as i64 };
+            let coeff = unsafe { *coeffs.get_unchecked(i) as i64 };
+            total += sample * coeff;
+        }
+        total
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+mod aarch64 {
+    #[inline]
+    pub(crate) fn dot_f32_neon(samples: &[f32], coeffs: &[f32]) -> f32 {
+        super::scalar::dot_f32(samples, coeffs)
+    }
+
+    #[inline]
+    pub(crate) fn dot_i16_q15_neon(samples: &[i16], coeffs: &[i16]) -> i64 {
+        super::scalar::dot_i16_q15(samples, coeffs)
     }
 }
 
@@ -229,5 +321,27 @@ mod x86 {
     #[inline]
     pub(crate) fn dot_i16_q15_avx2(samples: &[i16], coeffs: &[i16]) -> i64 {
         super::scalar::dot_i16_q15(samples, coeffs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Error;
+
+    #[test]
+    #[cfg(not(target_arch = "aarch64"))]
+    fn explicit_neon_is_unsupported_off_aarch64() {
+        assert_eq!(
+            Backend::Neon.select(),
+            Err(Error::UnsupportedBackend("neon"))
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn auto_selects_neon_on_aarch64() {
+        assert_eq!(Backend::Auto.select().unwrap(), SelectedBackend::Neon);
+        assert_eq!(Backend::Neon.select().unwrap(), SelectedBackend::Neon);
     }
 }

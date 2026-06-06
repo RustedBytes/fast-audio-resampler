@@ -1,8 +1,8 @@
-//! Fast streaming audio resampling for Intel and AMD x86 CPUs.
+//! Fast streaming audio resampling for x86 and AArch64 ARM CPUs.
 //!
 //! The crate uses a windowed-sinc polyphase FIR design with runtime CPU feature
-//! dispatch. AVX/FMA kernels are isolated behind backend modules; the scalar
-//! path remains the correctness reference and the portable fallback.
+//! dispatch. AVX/FMA and NEON kernels are isolated behind backend modules; the
+//! scalar path remains the correctness reference and the portable fallback.
 
 mod aligned;
 mod backend;
