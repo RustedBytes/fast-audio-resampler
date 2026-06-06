@@ -39,8 +39,6 @@ Criterion benchmark results from `cargo bench --bench resampler` with `Balanced`
 
 ### x86_64
 
-Measured on Windows 11, AMD Ryzen AI 7 350, Rust 1.96.0.
-
 | Format | Ratio | Channels | Backend | Median |
 | --- | --- | ---: | --- | ---: |
 | `f32` | 8k -> 16k | 1 | scalar | 3.360 ms |
@@ -53,8 +51,6 @@ Measured on Windows 11, AMD Ryzen AI 7 350, Rust 1.96.0.
 Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.807 ms with `Backend::Auto`.
 
 ### AArch64 ARM
-
-Measured on an AArch64 ARM runner with `Backend::Auto` selecting NEON. The available ARM run output included these complete measurements.
 
 | Format | Ratio | Channels | Backend | Median |
 | --- | --- | ---: | --- | ---: |
