@@ -29,6 +29,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         channels: spec.channels as usize,
         quality: args.quality,
         backend: args.backend,
+        max_input_frames_per_chunk: None,
     };
 
     match (spec.sample_format, spec.bits_per_sample) {

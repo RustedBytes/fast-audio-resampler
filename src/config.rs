@@ -35,6 +35,7 @@ pub struct ResamplerConfig {
     pub channels: usize,
     pub quality: Quality,
     pub backend: Backend,
+    pub max_input_frames_per_chunk: Option<usize>,
 }
 
 impl ResamplerConfig {
@@ -46,6 +47,7 @@ impl ResamplerConfig {
             channels,
             quality: Quality::default(),
             backend: Backend::Auto,
+            max_input_frames_per_chunk: None,
         }
     }
 

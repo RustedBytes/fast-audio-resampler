@@ -8,6 +8,7 @@ fn config(input_rate: u32, output_rate: u32, channels: usize, backend: Backend) 
         channels,
         quality: Quality::Balanced,
         backend,
+        max_input_frames_per_chunk: Some(1024),
     }
 }
 

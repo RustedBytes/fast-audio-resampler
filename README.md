@@ -1,5 +1,7 @@
 # fast-audio-resampler
 
+[![Crates.io Version](https://img.shields.io/crates/v/fast-audio-resampler)](https://crates.io/crates/fast-audio-resampler)
+
 Fast streaming audio resampling for Rust, focused on Intel and AMD x86/x86_64 CPUs.
 
 The crate exposes a reusable library by default. WAV CLI support is optional and gated behind the `cli` feature so library users do not pull `hound`.
@@ -15,6 +17,7 @@ let config = ResamplerConfig {
     channels: 2,
     quality: Quality::Balanced,
     backend: Backend::Auto,
+    max_input_frames_per_chunk: None,
 };
 
 let mut resampler = Resampler::<f32>::new(config)?;
@@ -71,4 +74,3 @@ Output size:
 
 - Default: library only, no WAV dependency.
 - `cli`: enables the WAV command-line tool and the optional `hound` dependency.
-

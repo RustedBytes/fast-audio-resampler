@@ -7,6 +7,7 @@ pub enum Error {
     InvalidSampleRate,
     InvalidChannels,
     InputNotFrameAligned { samples: usize, channels: usize },
+    OutputTooSmall { required: usize, available: usize },
     UnsupportedBackend(&'static str),
     Cli(String),
 }
@@ -19,6 +20,13 @@ impl fmt::Display for Error {
             Self::InputNotFrameAligned { samples, channels } => write!(
                 f,
                 "input has {samples} samples, which is not divisible by {channels} channels"
+            ),
+            Self::OutputTooSmall {
+                required,
+                available,
+            } => write!(
+                f,
+                "output buffer has {available} samples, but {required} samples are required"
             ),
             Self::UnsupportedBackend(backend) => {
                 write!(f, "requested backend is not available: {backend}")

@@ -4,7 +4,7 @@ use crate::backend::{self, SelectedBackend};
 use crate::error::frame_alignment_error;
 use crate::filter::FilterBank;
 use crate::ring::RingBuffer;
-use crate::{ResamplerConfig, Result};
+use crate::{Error, ResamplerConfig, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpecialRatio {
@@ -40,6 +40,14 @@ impl<T> Resampler<T> {
             Inner::I16(core) => core.backend,
         }
     }
+
+    #[inline]
+    pub fn required_output_capacity(&self, input_frames: usize) -> usize {
+        match &self.inner {
+            Inner::F32(core) => core.required_output_capacity(input_frames),
+            Inner::I16(core) => core.required_output_capacity(input_frames),
+        }
+    }
 }
 
 impl Resampler<f32> {
@@ -65,6 +73,48 @@ impl Resampler<f32> {
             Inner::I16(_) => unreachable!("f32 resampler cannot hold i16 core"),
         }
     }
+
+    #[inline]
+    pub fn flush(&mut self, output: &mut Vec<f32>) -> Result<ProcessStats> {
+        self.finish(output)
+    }
+
+    pub fn process_into_slice(
+        &mut self,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<ProcessStats> {
+        if !input.len().is_multiple_of(self.config_channels()) {
+            return Err(frame_alignment_error(input.len(), self.config_channels()));
+        }
+        let required = self.required_output_capacity(input.len() / self.config_channels());
+        if output.len() < required {
+            return Err(Error::OutputTooSmall {
+                required,
+                available: output.len(),
+            });
+        }
+        let mut tmp = Vec::with_capacity(required);
+        let stats = self.process(input, &mut tmp)?;
+        output[..tmp.len()].copy_from_slice(&tmp);
+        Ok(stats)
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        match &mut self.inner {
+            Inner::F32(core) => core.reset(),
+            Inner::I16(_) => unreachable!("f32 resampler cannot hold i16 core"),
+        }
+    }
+
+    #[inline]
+    fn config_channels(&self) -> usize {
+        match &self.inner {
+            Inner::F32(core) => core.config.channels,
+            Inner::I16(_) => unreachable!("f32 resampler cannot hold i16 core"),
+        }
+    }
 }
 
 impl Resampler<i16> {
@@ -87,6 +137,48 @@ impl Resampler<i16> {
     pub fn finish(&mut self, output: &mut Vec<i16>) -> Result<ProcessStats> {
         match &mut self.inner {
             Inner::I16(core) => core.finish(output),
+            Inner::F32(_) => unreachable!("i16 resampler cannot hold f32 core"),
+        }
+    }
+
+    #[inline]
+    pub fn flush(&mut self, output: &mut Vec<i16>) -> Result<ProcessStats> {
+        self.finish(output)
+    }
+
+    pub fn process_into_slice(
+        &mut self,
+        input: &[i16],
+        output: &mut [i16],
+    ) -> Result<ProcessStats> {
+        if !input.len().is_multiple_of(self.config_channels()) {
+            return Err(frame_alignment_error(input.len(), self.config_channels()));
+        }
+        let required = self.required_output_capacity(input.len() / self.config_channels());
+        if output.len() < required {
+            return Err(Error::OutputTooSmall {
+                required,
+                available: output.len(),
+            });
+        }
+        let mut tmp = Vec::with_capacity(required);
+        let stats = self.process(input, &mut tmp)?;
+        output[..tmp.len()].copy_from_slice(&tmp);
+        Ok(stats)
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        match &mut self.inner {
+            Inner::I16(core) => core.reset(),
+            Inner::F32(_) => unreachable!("i16 resampler cannot hold f32 core"),
+        }
+    }
+
+    #[inline]
+    fn config_channels(&self) -> usize {
+        match &self.inner {
+            Inner::I16(core) => core.config.channels,
             Inner::F32(_) => unreachable!("i16 resampler cannot hold f32 core"),
         }
     }
@@ -165,6 +257,24 @@ impl CoreF32 {
         self.render_available(output, true);
         self.finished = true;
         Ok(self.stats(0, (output.len() - before) / self.config.channels))
+    }
+
+    #[inline]
+    fn required_output_capacity(&self, input_frames: usize) -> usize {
+        required_output_capacity(
+            input_frames,
+            self.config.input_rate,
+            self.config.output_rate,
+            self.config.channels,
+            self.filter.half_taps(),
+        )
+    }
+
+    fn reset(&mut self) {
+        let config = self.config;
+        if let Ok(new_core) = Self::new(config) {
+            *self = new_core;
+        }
     }
 
     fn append_input(&mut self, input: &[f32]) -> Result<usize> {
@@ -324,6 +434,24 @@ impl CoreI16 {
         Ok(self.stats(0, (output.len() - before) / self.config.channels))
     }
 
+    #[inline]
+    fn required_output_capacity(&self, input_frames: usize) -> usize {
+        required_output_capacity(
+            input_frames,
+            self.config.input_rate,
+            self.config.output_rate,
+            self.config.channels,
+            self.filter.half_taps(),
+        )
+    }
+
+    fn reset(&mut self) {
+        let config = self.config;
+        if let Ok(new_core) = Self::new(config) {
+            *self = new_core;
+        }
+    }
+
     fn append_input(&mut self, input: &[i16]) -> Result<usize> {
         if !input.len().is_multiple_of(self.config.channels) {
             return Err(frame_alignment_error(input.len(), self.config.channels));
@@ -450,7 +578,13 @@ fn init_common<T: Copy + Default>(config: ResamplerConfig) -> Result<CommonInit<
     let backend = config.backend.select()?;
     let filter = FilterBank::new(config.input_rate, config.output_rate, config.quality);
     let taps = filter.taps();
-    let ring_capacity = (taps * 4).max(taps + 8);
+    let ring_capacity = (taps * 4).max(
+        config
+            .max_input_frames_per_chunk
+            .unwrap_or(0)
+            .saturating_add(taps)
+            .saturating_add(8),
+    );
     let channels = (0..config.channels)
         .map(|_| RingBuffer::with_capacity(ring_capacity))
         .collect();
@@ -541,6 +675,23 @@ fn expected_output_frames(input_frames: i64, input_rate: u32, output_rate: u32) 
     (input_frames * output_rate).div_ceil(input_rate) as i64
 }
 
+#[inline]
+fn required_output_capacity(
+    input_frames: usize,
+    input_rate: u32,
+    output_rate: u32,
+    channels: usize,
+    half_taps: usize,
+) -> usize {
+    let frames = expected_output_frames(
+        input_frames as i64 + half_taps as i64 + 2,
+        input_rate,
+        output_rate,
+    )
+    .max(0) as usize;
+    frames.saturating_mul(channels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +704,7 @@ mod tests {
             channels,
             quality: Quality::Fast,
             backend: Backend::Scalar,
+            max_input_frames_per_chunk: None,
         }
     }
 
@@ -728,5 +880,57 @@ mod tests {
                 assert!((*a as i32 - *b as i32).abs() <= 1, "{a} != {b}");
             }
         }
+    }
+
+    #[test]
+    fn reset_reuses_resampler_for_new_stream() {
+        let input: Vec<f32> = (0..256).map(|i| ((i as f32) * 0.03).sin()).collect();
+        let mut first = Resampler::<f32>::new(cfg(44_100, 48_000, 1)).unwrap();
+        let mut expected = Vec::new();
+        first.process(&input, &mut expected).unwrap();
+        first.finish(&mut expected).unwrap();
+
+        let mut reusable = Resampler::<f32>::new(cfg(44_100, 48_000, 1)).unwrap();
+        let mut ignored = Vec::new();
+        reusable.process(&input[..128], &mut ignored).unwrap();
+        reusable.reset();
+        let mut actual = Vec::new();
+        reusable.process(&input, &mut actual).unwrap();
+        reusable.flush(&mut actual).unwrap();
+
+        assert_eq!(expected.len(), actual.len());
+        for (a, b) in expected.iter().zip(actual.iter()) {
+            assert!((a - b).abs() < 1.0e-5, "{a} != {b}");
+        }
+    }
+
+    #[test]
+    fn process_into_slice_reports_capacity_and_writes_samples() {
+        let input: Vec<i16> = (0..320)
+            .map(|i| (((i as f32) * 0.07).sin() * 10_000.0) as i16)
+            .collect();
+        let mut resampler = Resampler::<i16>::new(cfg(16_000, 8_000, 1)).unwrap();
+        let required = resampler.required_output_capacity(input.len());
+        let mut too_small = vec![0i16; required.saturating_sub(1)];
+        let err = resampler
+            .process_into_slice(&input, &mut too_small)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            Error::OutputTooSmall {
+                required,
+                available: required - 1
+            }
+        );
+
+        let mut output = vec![0i16; required];
+        let stats = resampler.process_into_slice(&input, &mut output).unwrap();
+        assert_eq!(stats.input_frames, input.len());
+        assert!(stats.output_frames > 0);
+        assert!(
+            output[..stats.output_frames]
+                .iter()
+                .any(|&sample| sample != 0)
+        );
     }
 }
