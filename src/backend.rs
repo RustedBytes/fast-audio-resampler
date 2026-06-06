@@ -87,7 +87,11 @@ mod scalar {
     pub(crate) fn dot_f32(samples: &[f32], coeffs: &[f32]) -> f32 {
         let mut acc = 0.0f32;
         for i in 0..samples.len() {
-            acc = samples[i].mul_add(coeffs[i], acc);
+            // Avoid `mul_add` here: without FMA target features LLVM lowers it
+            // to a libm `fmaf` call, which is much slower than scalar mul/add.
+            unsafe {
+                acc += *samples.get_unchecked(i) * *coeffs.get_unchecked(i);
+            }
         }
         acc
     }
@@ -119,7 +123,9 @@ mod x86 {
         unsafe { _mm256_storeu_ps(lanes.as_mut_ptr(), acc) };
         let mut total = lanes.iter().copied().sum::<f32>();
         for i in chunks * 8..samples.len() {
-            total = samples[i].mul_add(coeffs[i], total);
+            let sample = unsafe { *samples.get_unchecked(i) };
+            let coeff = unsafe { *coeffs.get_unchecked(i) };
+            total = sample.mul_add(coeff, total);
         }
         total
     }
@@ -143,7 +149,9 @@ mod x86 {
         unsafe { _mm512_storeu_ps(lanes.as_mut_ptr(), acc) };
         let mut total = lanes.iter().copied().sum::<f32>();
         for i in chunks * 16..samples.len() {
-            total = samples[i].mul_add(coeffs[i], total);
+            let sample = unsafe { *samples.get_unchecked(i) };
+            let coeff = unsafe { *coeffs.get_unchecked(i) };
+            total = sample.mul_add(coeff, total);
         }
         total
     }

@@ -71,7 +71,7 @@ impl FilterBank {
 
     #[inline(always)]
     pub(crate) fn coeffs_for_fraction(&self, fraction: f64) -> &[f32] {
-        let phase = ((fraction * self.phases as f64).round() as usize).min(self.phases - 1);
+        let phase = ((fraction * self.phases as f64) as usize).min(self.phases - 1);
         let start = phase * self.taps;
         &self.coeffs[start..start + self.taps]
     }

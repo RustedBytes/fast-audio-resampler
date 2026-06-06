@@ -28,6 +28,7 @@ struct Core {
     start_frame: i64,
     total_input_frames: i64,
     next_source_pos: f64,
+    output_frames_emitted: i64,
     step: f64,
     special_ratio: SpecialRatio,
     scratch: Vec<f32>,
@@ -98,8 +99,9 @@ impl Core {
         config.validate()?;
         let backend = config.backend.select()?;
         let filter = FilterBank::new(config.input_rate, config.output_rate, config.quality);
+        let taps = filter.taps();
         let channels = (0..config.channels)
-            .map(|_| Vec::with_capacity(filter.taps() * 4))
+            .map(|_| Vec::with_capacity(taps * 4))
             .collect();
         let step = config.input_rate as f64 / config.output_rate as f64;
         let special_ratio = match (config.input_rate, config.output_rate) {
@@ -115,9 +117,10 @@ impl Core {
             start_frame: 0,
             total_input_frames: 0,
             next_source_pos: 0.0,
+            output_frames_emitted: 0,
             step,
             special_ratio,
-            scratch: Vec::new(),
+            scratch: vec![0.0; taps],
             finished: false,
         })
     }
@@ -176,30 +179,40 @@ impl Core {
         } else {
             i64::MAX
         };
-        output.reserve(self.config.channels * 256);
+        output.reserve(self.frames_ready_to_render(flush, out_frames) * self.config.channels);
         loop {
-            let next_output_index = (self.next_source_pos * self.config.output_rate as f64
-                / self.config.input_rate as f64)
-                .round() as i64;
-            if flush && next_output_index >= out_frames {
+            if flush && self.output_frames_emitted >= out_frames {
                 break;
             }
             if !flush && !self.has_future_samples(self.next_source_pos) {
                 break;
             }
-            let frame = self.render_frame(self.next_source_pos);
-            output.extend_from_slice(&frame);
+            self.render_frame_into(self.next_source_pos, output);
             self.next_source_pos += self.step;
+            self.output_frames_emitted += 1;
         }
     }
 
     fn has_future_samples(&self, source_pos: f64) -> bool {
-        let center = source_pos.floor() as i64;
+        let center = source_pos as i64;
         center + (self.filter.half_taps() as i64) < self.total_input_frames
     }
 
-    fn render_frame(&mut self, source_pos: f64) -> Vec<f32> {
-        let center = source_pos.floor() as i64;
+    fn frames_ready_to_render(&self, flush: bool, out_frames: i64) -> usize {
+        if flush {
+            return out_frames.saturating_sub(self.output_frames_emitted).max(0) as usize;
+        }
+
+        let max_center = self.total_input_frames - self.filter.half_taps() as i64 - 1;
+        let current_center = self.next_source_pos as i64;
+        if current_center > max_center {
+            return 0;
+        }
+        (((max_center as f64 - self.next_source_pos) / self.step) as usize).saturating_add(1)
+    }
+
+    fn render_frame_into(&mut self, source_pos: f64, output: &mut Vec<f32>) {
+        let center = source_pos as i64;
         let fraction = source_pos - center as f64;
         let coeffs = match self.special_ratio {
             SpecialRatio::Up2 | SpecialRatio::Down2 | SpecialRatio::General => {
@@ -209,17 +222,17 @@ impl Core {
         let first_tap_frame = center - self.filter.half_taps() as i64 + 1;
         let channels = self.config.channels;
         let taps = self.filter.taps();
-        let mut frame = Vec::with_capacity(channels);
         for channel in 0..channels {
-            self.scratch.clear();
-            self.scratch.reserve(taps);
             for tap in 0..taps {
                 let absolute = first_tap_frame + tap as i64;
-                self.scratch.push(self.sample_at(channel, absolute));
+                self.scratch[tap] = self.sample_at(channel, absolute);
             }
-            frame.push(backend::dot_f32(self.backend, &self.scratch, coeffs));
+            output.push(backend::dot_f32(
+                self.backend,
+                &self.scratch[..taps],
+                coeffs,
+            ));
         }
-        frame
     }
 
     #[inline(always)]
@@ -232,7 +245,7 @@ impl Core {
     }
 
     fn discard_consumed(&mut self) {
-        let keep_from = (self.next_source_pos.floor() as i64 - self.filter.half_taps() as i64 - 2)
+        let keep_from = (self.next_source_pos as i64 - self.filter.half_taps() as i64 - 2)
             .max(self.start_frame);
         let remove = (keep_from - self.start_frame) as usize;
         if remove == 0 {
@@ -253,8 +266,10 @@ fn f32_to_i16(sample: f32) -> i16 {
 
 #[inline]
 fn expected_output_frames(input_frames: i64, input_rate: u32, output_rate: u32) -> i64 {
-    ((input_frames as i128 * output_rate as i128 + input_rate as i128 - 1) / input_rate as i128)
-        as i64
+    let input_frames = input_frames.max(0) as u64;
+    let input_rate = input_rate as u64;
+    let output_rate = output_rate as u64;
+    (input_frames * output_rate).div_ceil(input_rate) as i64
 }
 
 #[cfg(test)]
