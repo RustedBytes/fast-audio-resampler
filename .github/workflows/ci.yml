@@ -5,6 +5,13 @@ on:
     branches:
       - main
       - master
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - tests/**
+      - benches/**
+      - .github/workflows/ci.yml
 
 jobs:
   test:
