@@ -33,3 +33,6 @@ jobs:
 
       - name: Test CLI feature
         run: cargo test --locked --features cli
+
+      - name: Run benchmarks
+        run: cargo bench --locked --bench resampler
