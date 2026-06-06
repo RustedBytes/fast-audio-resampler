@@ -3,8 +3,12 @@ name = "fast-audio-resampler"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+cli = ["dep:hound"]
+
 [dependencies]
-hound = "3.5"
+hound = { version = "3.5", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -12,6 +16,11 @@ criterion = "0.5"
 [[bench]]
 name = "resampler"
 harness = false
+
+[[bin]]
+name = "fast-audio-resampler"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [profile.release]
 lto = "thin"
