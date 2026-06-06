@@ -1,12 +1,14 @@
 use std::f64::consts::PI;
 
 use crate::Quality;
+use crate::aligned::AlignedVec;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FilterBank {
     taps: usize,
     phases: usize,
-    coeffs: Vec<f32>,
+    coeffs: AlignedVec<f32, 64>,
+    coeffs_q15: AlignedVec<i16, 64>,
 }
 
 impl FilterBank {
@@ -52,10 +54,21 @@ impl FilterBank {
             }
         }
 
+        let coeffs_q15: Vec<i16> = coeffs
+            .iter()
+            .map(|&coeff| {
+                let scaled = (coeff * 32767.0)
+                    .round()
+                    .clamp(i16::MIN as f32, i16::MAX as f32);
+                scaled as i16
+            })
+            .collect();
+
         Self {
             taps,
             phases,
-            coeffs,
+            coeffs: AlignedVec::from_slice(&coeffs),
+            coeffs_q15: AlignedVec::from_slice(&coeffs_q15),
         }
     }
 
@@ -70,13 +83,17 @@ impl FilterBank {
     }
 
     #[inline(always)]
-    pub(crate) fn coeffs_for_fraction(&self, fraction: f64) -> &[f32] {
-        let phase = ((fraction * self.phases as f64) as usize).min(self.phases - 1);
+    pub(crate) fn coeffs_for_phase(&self, phase: usize) -> &[f32] {
         let start = phase * self.taps;
         &self.coeffs[start..start + self.taps]
     }
 
-    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn coeffs_q15_for_phase(&self, phase: usize) -> &[i16] {
+        let start = phase * self.taps;
+        &self.coeffs_q15[start..start + self.taps]
+    }
+
     pub(crate) fn phase_count(&self) -> usize {
         self.phases
     }
@@ -106,7 +123,7 @@ mod tests {
         let bank = FilterBank::new(48_000, 44_100, Quality::Balanced);
         assert_eq!(bank.taps(), 48);
         assert_eq!(bank.phase_count(), 512);
-        let coeffs = bank.coeffs_for_fraction(0.25);
+        let coeffs = bank.coeffs_for_phase(128);
         assert_eq!(coeffs.len(), 48);
         let sum = coeffs.iter().sum::<f32>();
         assert!((sum - 1.0).abs() < 0.001);

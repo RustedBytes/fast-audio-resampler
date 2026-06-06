@@ -48,6 +48,24 @@ pub(crate) fn dot_f32(backend: SelectedBackend, samples: &[f32], coeffs: &[f32])
 }
 
 #[inline]
+pub(crate) fn dot_i16_q15(backend: SelectedBackend, samples: &[i16], coeffs: &[i16]) -> i16 {
+    debug_assert_eq!(samples.len(), coeffs.len());
+    let acc = match backend {
+        SelectedBackend::Scalar => scalar::dot_i16_q15(samples, coeffs),
+        SelectedBackend::Avx2 => x86::dot_i16_q15_avx2(samples, coeffs),
+        SelectedBackend::Avx512 if avx2_available() => x86::dot_i16_q15_avx2(samples, coeffs),
+        SelectedBackend::Avx512 => scalar::dot_i16_q15(samples, coeffs),
+    };
+    q15_acc_to_i16(acc)
+}
+
+#[inline(always)]
+fn q15_acc_to_i16(acc: i64) -> i16 {
+    let rounded = (acc + (1 << 14)) >> 15;
+    rounded.clamp(i16::MIN as i64, i16::MAX as i64) as i16
+}
+
+#[inline]
 fn auto_select() -> SelectedBackend {
     if avx512_available() {
         SelectedBackend::Avx512
@@ -91,6 +109,17 @@ mod scalar {
             // to a libm `fmaf` call, which is much slower than scalar mul/add.
             unsafe {
                 acc += *samples.get_unchecked(i) * *coeffs.get_unchecked(i);
+            }
+        }
+        acc
+    }
+
+    #[inline(always)]
+    pub(crate) fn dot_i16_q15(samples: &[i16], coeffs: &[i16]) -> i64 {
+        let mut acc = 0i64;
+        for i in 0..samples.len() {
+            unsafe {
+                acc += (*samples.get_unchecked(i) as i64) * (*coeffs.get_unchecked(i) as i64);
             }
         }
         acc
@@ -155,6 +184,34 @@ mod x86 {
         }
         total
     }
+
+    #[inline]
+    pub(crate) fn dot_i16_q15_avx2(samples: &[i16], coeffs: &[i16]) -> i64 {
+        unsafe { dot_i16_q15_avx2_inner(samples, coeffs) }
+    }
+
+    #[target_feature(enable = "avx2")]
+    unsafe fn dot_i16_q15_avx2_inner(samples: &[i16], coeffs: &[i16]) -> i64 {
+        let mut acc = _mm256_setzero_si256();
+        let chunks = samples.len() / 16;
+        for chunk in 0..chunks {
+            let i = chunk * 16;
+            let s = unsafe { _mm256_loadu_si256(samples.as_ptr().add(i).cast::<__m256i>()) };
+            let c = unsafe { _mm256_loadu_si256(coeffs.as_ptr().add(i).cast::<__m256i>()) };
+            let products = _mm256_madd_epi16(s, c);
+            acc = _mm256_add_epi32(acc, products);
+        }
+
+        let mut lanes = [0i32; 8];
+        unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast::<__m256i>(), acc) };
+        let mut total = lanes.iter().map(|&lane| lane as i64).sum::<i64>();
+        for i in chunks * 16..samples.len() {
+            let sample = unsafe { *samples.get_unchecked(i) as i64 };
+            let coeff = unsafe { *coeffs.get_unchecked(i) as i64 };
+            total += sample * coeff;
+        }
+        total
+    }
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -167,5 +224,10 @@ mod x86 {
     #[inline]
     pub(crate) fn dot_f32_avx512(samples: &[f32], coeffs: &[f32]) -> f32 {
         super::scalar::dot_f32(samples, coeffs)
+    }
+
+    #[inline]
+    pub(crate) fn dot_i16_q15_avx2(samples: &[i16], coeffs: &[i16]) -> i64 {
+        super::scalar::dot_i16_q15(samples, coeffs)
     }
 }
