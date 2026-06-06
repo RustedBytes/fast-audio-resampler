@@ -1,0 +1,18 @@
+[package]
+name = "fast-audio-resampler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hound = "3.5"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "resampler"
+harness = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
