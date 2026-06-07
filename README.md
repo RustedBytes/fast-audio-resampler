@@ -2,7 +2,7 @@
 
 [![Crates.io Version](https://img.shields.io/crates/v/fast-audio-resampler)](https://crates.io/crates/fast-audio-resampler)
 
-Fast streaming audio resampling for Rust, focused on x86/x86_64 and AArch64 ARM CPUs.
+Fast streaming audio resampling for Rust, focused on x86/x86_64, AArch64 ARM, and RISC-V CPUs.
 
 The crate exposes a reusable library by default. WAV CLI support is optional and gated behind the `cli` feature so library users do not pull `hound`.
 
@@ -69,7 +69,9 @@ Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.360 ms with
 - Supports `f32` and `i16` sample paths.
 - Uses runtime CPU feature detection instead of CPU vendor checks.
 - Uses AVX2/FMA, AVX-512, and AArch64 NEON intrinsics for `f32` where available.
-- Uses a Q15 fixed-point `i16` path with AVX2 `_mm256_madd_epi16` or AArch64 NEON widening multiply on supported CPUs.
+- Uses RISC-V RVV 1.0 kernels on `riscv64` builds compiled with `-C target-feature=+v`.
+- Uses a Q15 fixed-point `i16` path with AVX2 `_mm256_madd_epi16`, AArch64 NEON widening multiply, or RISC-V RVV widening multiply-accumulate on supported CPUs.
+- Keeps RISC-V RVV selection compile-time gated because stable Rust does not yet provide portable runtime detection for the vector extension.
 - Stores FIR coefficients in phase-major aligned storage for cache-friendly reads.
 - Uses per-channel ring buffers for streaming history, avoiding steady-state buffer shifting.
 - Keeps the public API stable while hiding backend and buffer details internally.

@@ -883,6 +883,60 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_arch = "riscv64", target_feature = "v"))]
+    fn f32_scalar_and_rvv_match_for_special_and_general_ratios() {
+        for (input_rate, output_rate, input_frames) in [(8_000, 16_000, 160), (44_100, 48_000, 441)]
+        {
+            let input: Vec<f32> = (0..input_frames)
+                .map(|i| ((i as f32) * 0.09).sin())
+                .collect();
+            let mut scalar = Resampler::<f32>::new(cfg(input_rate, output_rate, 1)).unwrap();
+            let mut scalar_out = Vec::new();
+            scalar.process(&input, &mut scalar_out).unwrap();
+            scalar.finish(&mut scalar_out).unwrap();
+
+            let mut rvv_cfg = cfg(input_rate, output_rate, 1);
+            rvv_cfg.backend = Backend::Rvv;
+            let mut rvv = Resampler::<f32>::new(rvv_cfg).unwrap();
+            let mut rvv_out = Vec::new();
+            rvv.process(&input, &mut rvv_out).unwrap();
+            rvv.finish(&mut rvv_out).unwrap();
+
+            assert_eq!(scalar_out.len(), rvv_out.len());
+            for (a, b) in scalar_out.iter().zip(rvv_out.iter()) {
+                assert!((a - b).abs() < 1.0e-5, "{a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "riscv64", target_feature = "v"))]
+    fn i16_scalar_and_rvv_are_close_for_special_and_general_ratios() {
+        for (input_rate, output_rate, input_frames) in [(8_000, 16_000, 160), (44_100, 48_000, 441)]
+        {
+            let input: Vec<i16> = (0..input_frames)
+                .map(|i| (((i as f32) * 0.09).sin() * 12_000.0) as i16)
+                .collect();
+            let mut scalar = Resampler::<i16>::new(cfg(input_rate, output_rate, 1)).unwrap();
+            let mut scalar_out = Vec::new();
+            scalar.process(&input, &mut scalar_out).unwrap();
+            scalar.finish(&mut scalar_out).unwrap();
+
+            let mut rvv_cfg = cfg(input_rate, output_rate, 1);
+            rvv_cfg.backend = Backend::Rvv;
+            let mut rvv = Resampler::<i16>::new(rvv_cfg).unwrap();
+            let mut rvv_out = Vec::new();
+            rvv.process(&input, &mut rvv_out).unwrap();
+            rvv.finish(&mut rvv_out).unwrap();
+
+            assert_eq!(scalar_out.len(), rvv_out.len());
+            for (a, b) in scalar_out.iter().zip(rvv_out.iter()) {
+                assert!((*a as i32 - *b as i32).abs() <= 1, "{a} != {b}");
+            }
+        }
+    }
+
+    #[test]
     fn reset_reuses_resampler_for_new_stream() {
         let input: Vec<f32> = (0..256).map(|i| ((i as f32) * 0.03).sin()).collect();
         let mut first = Resampler::<f32>::new(cfg(44_100, 48_000, 1)).unwrap();

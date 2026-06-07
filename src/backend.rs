@@ -5,6 +5,7 @@ pub enum Backend {
     Avx2,
     Avx512,
     Neon,
+    Rvv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub enum SelectedBackend {
     Avx2,
     Avx512,
     Neon,
+    Rvv,
 }
 
 impl SelectedBackend {
@@ -23,6 +25,7 @@ impl SelectedBackend {
             Self::Avx2 => "avx2+fma",
             Self::Avx512 => "avx512f",
             Self::Neon => "neon",
+            Self::Rvv => "rvv",
         }
     }
 }
@@ -35,9 +38,11 @@ impl Backend {
             Self::Avx2 if avx2_available() => Ok(SelectedBackend::Avx2),
             Self::Avx512 if avx512_available() => Ok(SelectedBackend::Avx512),
             Self::Neon if neon_available() => Ok(SelectedBackend::Neon),
+            Self::Rvv if rvv_available() => Ok(SelectedBackend::Rvv),
             Self::Avx2 => Err(crate::Error::UnsupportedBackend("avx2+fma")),
             Self::Avx512 => Err(crate::Error::UnsupportedBackend("avx512f")),
             Self::Neon => Err(crate::Error::UnsupportedBackend("neon")),
+            Self::Rvv => Err(crate::Error::UnsupportedBackend("rvv")),
         }
     }
 }
@@ -50,6 +55,7 @@ pub(crate) fn dot_f32(backend: SelectedBackend, samples: &[f32], coeffs: &[f32])
         SelectedBackend::Avx2 => x86::dot_f32_avx2(samples, coeffs),
         SelectedBackend::Avx512 => x86::dot_f32_avx512(samples, coeffs),
         SelectedBackend::Neon => aarch64::dot_f32_neon(samples, coeffs),
+        SelectedBackend::Rvv => riscv64::dot_f32_rvv(samples, coeffs),
     }
 }
 
@@ -62,6 +68,7 @@ pub(crate) fn dot_i16_q15(backend: SelectedBackend, samples: &[i16], coeffs: &[i
         SelectedBackend::Avx512 if avx2_available() => x86::dot_i16_q15_avx2(samples, coeffs),
         SelectedBackend::Avx512 => scalar::dot_i16_q15(samples, coeffs),
         SelectedBackend::Neon => aarch64::dot_i16_q15_neon(samples, coeffs),
+        SelectedBackend::Rvv => riscv64::dot_i16_q15_rvv(samples, coeffs),
     };
     q15_acc_to_i16(acc)
 }
@@ -80,6 +87,8 @@ fn auto_select() -> SelectedBackend {
         SelectedBackend::Avx2
     } else if neon_available() {
         SelectedBackend::Neon
+    } else if rvv_available() {
+        SelectedBackend::Rvv
     } else {
         SelectedBackend::Scalar
     }
@@ -116,6 +125,18 @@ fn neon_available() -> bool {
         true
     }
     #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
+#[inline]
+fn rvv_available() -> bool {
+    #[cfg(all(target_arch = "riscv64", target_feature = "v"))]
+    {
+        true
+    }
+    #[cfg(not(all(target_arch = "riscv64", target_feature = "v")))]
     {
         false
     }
@@ -324,6 +345,123 @@ mod x86 {
     }
 }
 
+#[cfg(all(target_arch = "riscv64", target_feature = "v"))]
+mod riscv64 {
+    use core::arch::asm;
+
+    #[inline]
+    pub(crate) fn dot_f32_rvv(samples: &[f32], coeffs: &[f32]) -> f32 {
+        unsafe { dot_f32_rvv_inner(samples, coeffs) }
+    }
+
+    unsafe fn dot_f32_rvv_inner(samples: &[f32], coeffs: &[f32]) -> f32 {
+        let mut samples_ptr = samples.as_ptr();
+        let mut coeffs_ptr = coeffs.as_ptr();
+        let mut remaining = samples.len();
+        let mut total: f32;
+
+        unsafe {
+            asm!(
+                "vsetvli t0, zero, e32, m1, ta, ma",
+                "vmv.v.i v0, 0",
+                "2:",
+                "beqz {remaining}, 3f",
+                "vsetvli t0, {remaining}, e32, m1, tu, ma",
+                "vle32.v v8, ({samples_ptr})",
+                "vle32.v v9, ({coeffs_ptr})",
+                "vfmacc.vv v0, v8, v9",
+                "slli t1, t0, 2",
+                "add {samples_ptr}, {samples_ptr}, t1",
+                "add {coeffs_ptr}, {coeffs_ptr}, t1",
+                "sub {remaining}, {remaining}, t0",
+                "j 2b",
+                "3:",
+                "vsetvli t0, zero, e32, m1, ta, ma",
+                "vmv.v.i v10, 0",
+                "vfredusum.vs v11, v0, v10",
+                "vfmv.f.s {total}, v11",
+                samples_ptr = inout(reg) samples_ptr,
+                coeffs_ptr = inout(reg) coeffs_ptr,
+                remaining = inout(reg) remaining,
+                total = lateout(freg) total,
+                out("t0") _,
+                out("t1") _,
+                out("v0") _,
+                out("v8") _,
+                out("v9") _,
+                out("v10") _,
+                out("v11") _,
+            );
+        }
+
+        total
+    }
+
+    #[inline]
+    pub(crate) fn dot_i16_q15_rvv(samples: &[i16], coeffs: &[i16]) -> i64 {
+        if samples.len() > 128 {
+            return super::scalar::dot_i16_q15(samples, coeffs);
+        }
+        unsafe { dot_i16_q15_rvv_inner(samples, coeffs) }
+    }
+
+    unsafe fn dot_i16_q15_rvv_inner(samples: &[i16], coeffs: &[i16]) -> i64 {
+        let mut products = [0i32; 128];
+        let mut samples_ptr = samples.as_ptr();
+        let mut coeffs_ptr = coeffs.as_ptr();
+        let mut remaining = samples.len();
+        let mut total = 0i64;
+
+        while remaining > 0 {
+            let mut vl = remaining;
+            unsafe {
+                asm!(
+                    "vsetvli {vl}, {vl}, e16, m1, ta, ma",
+                    "vle16.v v8, ({samples_ptr})",
+                    "vle16.v v9, ({coeffs_ptr})",
+                    "vsetvli t0, {vl}, e32, m2, ta, ma",
+                    "vmv.v.i v0, 0",
+                    "vsetvli zero, {vl}, e16, m1, ta, ma",
+                    "vwmacc.vv v0, v8, v9",
+                    "vsetvli zero, {vl}, e32, m2, ta, ma",
+                    "vse32.v v0, ({products_ptr})",
+                    vl = inout(reg) vl,
+                    samples_ptr = in(reg) samples_ptr,
+                    coeffs_ptr = in(reg) coeffs_ptr,
+                    products_ptr = in(reg) products.as_mut_ptr(),
+                    out("t0") _,
+                    out("v0") _,
+                    out("v1") _,
+                    out("v8") _,
+                    out("v9") _,
+                );
+            }
+
+            for &product in &products[..vl] {
+                total += product as i64;
+            }
+            samples_ptr = unsafe { samples_ptr.add(vl) };
+            coeffs_ptr = unsafe { coeffs_ptr.add(vl) };
+            remaining -= vl;
+        }
+
+        total
+    }
+}
+
+#[cfg(not(all(target_arch = "riscv64", target_feature = "v")))]
+mod riscv64 {
+    #[inline]
+    pub(crate) fn dot_f32_rvv(samples: &[f32], coeffs: &[f32]) -> f32 {
+        super::scalar::dot_f32(samples, coeffs)
+    }
+
+    #[inline]
+    pub(crate) fn dot_i16_q15_rvv(samples: &[i16], coeffs: &[i16]) -> i64 {
+        super::scalar::dot_i16_q15(samples, coeffs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,9 +477,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(all(target_arch = "riscv64", target_feature = "v")))]
+    fn explicit_rvv_is_unsupported_without_rvv_target_feature() {
+        assert_eq!(Backend::Rvv.select(), Err(Error::UnsupportedBackend("rvv")));
+    }
+
+    #[test]
     #[cfg(target_arch = "aarch64")]
     fn auto_selects_neon_on_aarch64() {
         assert_eq!(Backend::Auto.select().unwrap(), SelectedBackend::Neon);
         assert_eq!(Backend::Neon.select().unwrap(), SelectedBackend::Neon);
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "riscv64", target_feature = "v"))]
+    fn auto_selects_rvv_on_riscv64_with_v() {
+        assert_eq!(Backend::Auto.select().unwrap(), SelectedBackend::Rvv);
+        assert_eq!(Backend::Rvv.select().unwrap(), SelectedBackend::Rvv);
     }
 }

@@ -56,7 +56,7 @@ resampler.finish(&mut output)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The `i16` path uses fixed-point Q15 coefficients and uses AVX2 or AArch64 NEON integer multiply instructions on supported CPUs.
+The `i16` path uses fixed-point Q15 coefficients and uses AVX2, AArch64 NEON, or RISC-V RVV integer multiply instructions on supported CPUs.
 
 ## Chunked Processing
 
@@ -124,8 +124,9 @@ let mut output = Vec::with_capacity(resampler.required_output_capacity(input_fra
 - AVX2/FMA on supported x86/x86_64 CPUs
 - AVX-512 for `f32` where available
 - AArch64 NEON on ARM CPUs
+- RISC-V RVV on `riscv64` builds compiled with `-C target-feature=+v`
 
-Backend dispatch is based on CPU features, not CPU vendor strings.
+Backend dispatch is based on CPU features, not CPU vendor strings. RISC-V RVV selection is compile-time gated on stable Rust because portable runtime detection for the vector extension is not stable yet.
 
 ## CLI
 
