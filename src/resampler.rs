@@ -357,10 +357,30 @@ impl CoreF32 {
             output.reserve(ready * 2 * self.config.channels);
             while self.iir_input_frames_consumed < self.total_input_frames {
                 let frame = self.iir_input_frames_consumed;
-                for channel in 0..self.config.channels {
-                    let sample = self.sample_at(channel, frame);
-                    let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_stereo) {
+                    let left = self.sample_at(0, frame);
+                    let right = self.sample_at(1, frame);
+                    let [even, odd] = self.iir.as_mut().unwrap().process_up_stereo(left, right);
+                    output.extend_from_slice(&even);
+                    output.extend_from_slice(&odd);
+                } else if self.config.channels == 1 {
+                    let sample = self.sample_at(0, frame);
+                    let pair = self.iir.as_mut().unwrap().process_up(0, sample);
                     output.extend_from_slice(&pair);
+                } else {
+                    self.scratch.resize(self.config.channels * 2, 0.0);
+                    for channel in 0..self.config.channels {
+                        let sample = self.sample_at(channel, frame);
+                        let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                        self.scratch[channel * 2] = pair[0];
+                        self.scratch[channel * 2 + 1] = pair[1];
+                    }
+                    for channel in 0..self.config.channels {
+                        output.push(self.scratch[channel * 2]);
+                    }
+                    for channel in 0..self.config.channels {
+                        output.push(self.scratch[channel * 2 + 1]);
+                    }
                 }
                 self.iir_input_frames_consumed += 1;
                 self.output_frames_emitted += 2;
@@ -389,6 +409,23 @@ impl CoreF32 {
     }
 
     fn render_iir_down_pair(&mut self, output: &mut Vec<f32>, even_frame: i64, odd_frame: i64) {
+        if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_stereo) {
+            let even_left = self.sample_at(0, even_frame);
+            let even_right = self.sample_at(1, even_frame);
+            let (odd_left, odd_right) = if odd_frame >= 0 {
+                (self.sample_at(0, odd_frame), self.sample_at(1, odd_frame))
+            } else {
+                (0.0, 0.0)
+            };
+            let pair = self
+                .iir
+                .as_mut()
+                .unwrap()
+                .process_down_stereo(even_left, even_right, odd_left, odd_right);
+            output.extend_from_slice(&pair);
+            return;
+        }
+
         for channel in 0..self.config.channels {
             let even = self.sample_at(channel, even_frame);
             let odd = if odd_frame >= 0 {
@@ -652,11 +689,33 @@ impl CoreI16 {
             output.reserve(ready * 2 * self.config.channels);
             while self.iir_input_frames_consumed < self.total_input_frames {
                 let frame = self.iir_input_frames_consumed;
-                for channel in 0..self.config.channels {
-                    let sample = self.sample_at(channel, frame) as f32;
-                    let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_stereo) {
+                    let left = self.sample_at(0, frame) as f32;
+                    let right = self.sample_at(1, frame) as f32;
+                    let [even, odd] = self.iir.as_mut().unwrap().process_up_stereo(left, right);
+                    output.push(f32_to_i16(even[0]));
+                    output.push(f32_to_i16(even[1]));
+                    output.push(f32_to_i16(odd[0]));
+                    output.push(f32_to_i16(odd[1]));
+                } else if self.config.channels == 1 {
+                    let sample = self.sample_at(0, frame) as f32;
+                    let pair = self.iir.as_mut().unwrap().process_up(0, sample);
                     output.push(f32_to_i16(pair[0]));
                     output.push(f32_to_i16(pair[1]));
+                } else {
+                    self.scratch.resize(self.config.channels * 2, 0);
+                    for channel in 0..self.config.channels {
+                        let sample = self.sample_at(channel, frame) as f32;
+                        let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                        self.scratch[channel * 2] = f32_to_i16(pair[0]);
+                        self.scratch[channel * 2 + 1] = f32_to_i16(pair[1]);
+                    }
+                    for channel in 0..self.config.channels {
+                        output.push(self.scratch[channel * 2]);
+                    }
+                    for channel in 0..self.config.channels {
+                        output.push(self.scratch[channel * 2 + 1]);
+                    }
                 }
                 self.iir_input_frames_consumed += 1;
                 self.output_frames_emitted += 2;
@@ -685,6 +744,27 @@ impl CoreI16 {
     }
 
     fn render_iir_down_pair(&mut self, output: &mut Vec<i16>, even_frame: i64, odd_frame: i64) {
+        if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_stereo) {
+            let even_left = self.sample_at(0, even_frame) as f32;
+            let even_right = self.sample_at(1, even_frame) as f32;
+            let (odd_left, odd_right) = if odd_frame >= 0 {
+                (
+                    self.sample_at(0, odd_frame) as f32,
+                    self.sample_at(1, odd_frame) as f32,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            let pair = self
+                .iir
+                .as_mut()
+                .unwrap()
+                .process_down_stereo(even_left, even_right, odd_left, odd_right);
+            output.push(f32_to_i16(pair[0]));
+            output.push(f32_to_i16(pair[1]));
+            return;
+        }
+
         for channel in 0..self.config.channels {
             let even = self.sample_at(channel, even_frame) as f32;
             let odd = if odd_frame >= 0 {
@@ -1164,6 +1244,43 @@ mod tests {
             .sum::<f32>()
             / (input.len() - delay) as f32;
         assert!(mean_abs_error < 0.02, "mean abs error {mean_abs_error}");
+    }
+
+    #[test]
+    fn f32_polyphase_iir_stereo_matches_independent_mono_streams() {
+        for (input_rate, output_rate, frames) in [(8_000, 16_000, 160), (16_000, 8_000, 320)] {
+            let left: Vec<f32> = (0..frames).map(|i| ((i as f32) * 0.04).sin()).collect();
+            let right: Vec<f32> = (0..frames).map(|i| ((i as f32) * 0.07).cos()).collect();
+            let stereo_input: Vec<f32> = left
+                .iter()
+                .zip(right.iter())
+                .flat_map(|(&l, &r)| [l, r])
+                .collect();
+
+            let mut stereo = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut stereo_out = Vec::new();
+            stereo.process(&stereo_input, &mut stereo_out).unwrap();
+            stereo.finish(&mut stereo_out).unwrap();
+
+            let mut left_resampler =
+                Resampler::<f32>::new(cfg(input_rate, output_rate, 1)).unwrap();
+            let mut left_out = Vec::new();
+            left_resampler.process(&left, &mut left_out).unwrap();
+            left_resampler.finish(&mut left_out).unwrap();
+
+            let mut right_resampler =
+                Resampler::<f32>::new(cfg(input_rate, output_rate, 1)).unwrap();
+            let mut right_out = Vec::new();
+            right_resampler.process(&right, &mut right_out).unwrap();
+            right_resampler.finish(&mut right_out).unwrap();
+
+            assert_eq!(stereo_out.len(), left_out.len() * 2);
+            assert_eq!(left_out.len(), right_out.len());
+            for (frame, (&l, &r)) in left_out.iter().zip(right_out.iter()).enumerate() {
+                assert_eq!(stereo_out[frame * 2], l);
+                assert_eq!(stereo_out[frame * 2 + 1], r);
+            }
+        }
     }
 
     #[test]
