@@ -16,9 +16,13 @@ enum SpecialRatio {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Statistics returned from a processing call.
 pub struct ProcessStats {
+    /// Complete input frames accepted by the call.
     pub input_frames: usize,
+    /// Output frames appended by the call.
     pub output_frames: usize,
+    /// FIR backend used by the resampler.
     pub backend: SelectedFirBackend,
 }
 
@@ -29,12 +33,17 @@ enum Inner {
 }
 
 #[derive(Debug, Clone)]
+/// Streaming audio resampler for interleaved `f32` or `i16` samples.
+///
+/// A resampler owns filter history and phase state, so use one instance per
+/// independent stream. Input slices must contain complete interleaved frames.
 pub struct Resampler<T> {
     inner: Inner,
     _sample: PhantomData<T>,
 }
 
 impl<T> Resampler<T> {
+    /// Returns the FIR backend selected during construction.
     #[inline]
     pub fn selected_backend(&self) -> SelectedFirBackend {
         match &self.inner {
@@ -43,6 +52,10 @@ impl<T> Resampler<T> {
         }
     }
 
+    /// Returns a conservative output capacity in samples for `input_frames`.
+    ///
+    /// The returned value is suitable for reserving a `Vec` or sizing a fixed
+    /// output slice before processing a chunk.
     #[inline]
     pub fn required_output_capacity(&self, input_frames: usize) -> usize {
         match &self.inner {
@@ -53,6 +66,7 @@ impl<T> Resampler<T> {
 }
 
 impl Resampler<f32> {
+    /// Creates an `f32` resampler from a validated configuration.
     pub fn new(config: ResamplerConfig) -> Result<Self> {
         Ok(Self {
             inner: Inner::F32(CoreF32::new(config)?),
@@ -60,6 +74,10 @@ impl Resampler<f32> {
         })
     }
 
+    /// Appends resampled output for the provided interleaved input samples.
+    ///
+    /// Returns [`Error::InputNotFrameAligned`] if `input.len()` is not divisible
+    /// by the configured channel count.
     #[inline]
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<ProcessStats> {
         match &mut self.inner {
@@ -68,6 +86,10 @@ impl Resampler<f32> {
         }
     }
 
+    /// Flushes final filter output and marks this stream finished.
+    ///
+    /// Further calls to [`Self::process`] after `finish` return zero-frame
+    /// statistics until [`Self::reset`] is called.
     #[inline]
     pub fn finish(&mut self, output: &mut Vec<f32>) -> Result<ProcessStats> {
         match &mut self.inner {
@@ -76,11 +98,18 @@ impl Resampler<f32> {
         }
     }
 
+    /// Alias for [`Self::finish`] for streaming APIs that describe end-of-stream
+    /// handling as flushing.
     #[inline]
     pub fn flush(&mut self, output: &mut Vec<f32>) -> Result<ProcessStats> {
         self.finish(output)
     }
 
+    /// Processes input into a fixed output slice.
+    ///
+    /// The output slice must have at least [`Self::required_output_capacity`]
+    /// samples for the input frame count. No partial output is written when the
+    /// slice is too small.
     pub fn process_into_slice(
         &mut self,
         input: &[f32],
@@ -102,6 +131,8 @@ impl Resampler<f32> {
         Ok(stats)
     }
 
+    /// Resets history and phase state so the instance can process a new stream
+    /// with the same configuration.
     #[inline]
     pub fn reset(&mut self) {
         match &mut self.inner {
@@ -120,6 +151,7 @@ impl Resampler<f32> {
 }
 
 impl Resampler<i16> {
+    /// Creates an `i16` resampler from a validated configuration.
     pub fn new(config: ResamplerConfig) -> Result<Self> {
         Ok(Self {
             inner: Inner::I16(CoreI16::new(config)?),
@@ -127,6 +159,10 @@ impl Resampler<i16> {
         })
     }
 
+    /// Appends resampled output for the provided interleaved input samples.
+    ///
+    /// Returns [`Error::InputNotFrameAligned`] if `input.len()` is not divisible
+    /// by the configured channel count.
     #[inline]
     pub fn process(&mut self, input: &[i16], output: &mut Vec<i16>) -> Result<ProcessStats> {
         match &mut self.inner {
@@ -135,6 +171,10 @@ impl Resampler<i16> {
         }
     }
 
+    /// Flushes final filter output and marks this stream finished.
+    ///
+    /// Further calls to [`Self::process`] after `finish` return zero-frame
+    /// statistics until [`Self::reset`] is called.
     #[inline]
     pub fn finish(&mut self, output: &mut Vec<i16>) -> Result<ProcessStats> {
         match &mut self.inner {
@@ -143,11 +183,18 @@ impl Resampler<i16> {
         }
     }
 
+    /// Alias for [`Self::finish`] for streaming APIs that describe end-of-stream
+    /// handling as flushing.
     #[inline]
     pub fn flush(&mut self, output: &mut Vec<i16>) -> Result<ProcessStats> {
         self.finish(output)
     }
 
+    /// Processes input into a fixed output slice.
+    ///
+    /// The output slice must have at least [`Self::required_output_capacity`]
+    /// samples for the input frame count. No partial output is written when the
+    /// slice is too small.
     pub fn process_into_slice(
         &mut self,
         input: &[i16],
@@ -169,6 +216,8 @@ impl Resampler<i16> {
         Ok(stats)
     }
 
+    /// Resets history and phase state so the instance can process a new stream
+    /// with the same configuration.
     #[inline]
     pub fn reset(&mut self) {
         match &mut self.inner {
@@ -361,18 +410,30 @@ impl CoreF32 {
                 if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_stereo) {
                     let left = self.sample_at(0, frame);
                     let right = self.sample_at(1, frame);
-                    let [even, odd] = self.iir.as_mut().unwrap().process_up_stereo(left, right);
+                    let [even, odd] = self
+                        .iir
+                        .as_mut()
+                        .expect("IIR upsampling path requires initialized IIR state")
+                        .process_up_stereo(left, right);
                     output.extend_from_slice(&even);
                     output.extend_from_slice(&odd);
                 } else if self.config.channels == 1 {
                     let sample = self.sample_at(0, frame);
-                    let pair = self.iir.as_mut().unwrap().process_up(0, sample);
+                    let pair = self
+                        .iir
+                        .as_mut()
+                        .expect("IIR upsampling path requires initialized IIR state")
+                        .process_up(0, sample);
                     output.extend_from_slice(&pair);
                 } else {
                     self.scratch.resize(self.config.channels * 2, 0.0);
                     for channel in 0..self.config.channels {
                         let sample = self.sample_at(channel, frame);
-                        let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                        let pair = self
+                            .iir
+                            .as_mut()
+                            .expect("IIR upsampling path requires initialized IIR state")
+                            .process_up(channel, sample);
                         self.scratch[channel * 2] = pair[0];
                         self.scratch[channel * 2 + 1] = pair[1];
                     }
@@ -421,7 +482,7 @@ impl CoreF32 {
             let pair = self
                 .iir
                 .as_mut()
-                .unwrap()
+                .expect("IIR downsampling path requires initialized IIR state")
                 .process_down_stereo(even_left, even_right, odd_left, odd_right);
             output.extend_from_slice(&pair);
             return;
@@ -434,7 +495,12 @@ impl CoreF32 {
             } else {
                 0.0
             };
-            output.push(self.iir.as_mut().unwrap().process_down(channel, even, odd));
+            output.push(
+                self.iir
+                    .as_mut()
+                    .expect("IIR downsampling path requires initialized IIR state")
+                    .process_down(channel, even, odd),
+            );
         }
     }
 
@@ -693,21 +759,33 @@ impl CoreI16 {
                 if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_stereo) {
                     let left = self.sample_at(0, frame) as f32;
                     let right = self.sample_at(1, frame) as f32;
-                    let [even, odd] = self.iir.as_mut().unwrap().process_up_stereo(left, right);
+                    let [even, odd] = self
+                        .iir
+                        .as_mut()
+                        .expect("IIR upsampling path requires initialized IIR state")
+                        .process_up_stereo(left, right);
                     output.push(f32_to_i16(even[0]));
                     output.push(f32_to_i16(even[1]));
                     output.push(f32_to_i16(odd[0]));
                     output.push(f32_to_i16(odd[1]));
                 } else if self.config.channels == 1 {
                     let sample = self.sample_at(0, frame) as f32;
-                    let pair = self.iir.as_mut().unwrap().process_up(0, sample);
+                    let pair = self
+                        .iir
+                        .as_mut()
+                        .expect("IIR upsampling path requires initialized IIR state")
+                        .process_up(0, sample);
                     output.push(f32_to_i16(pair[0]));
                     output.push(f32_to_i16(pair[1]));
                 } else {
                     self.scratch.resize(self.config.channels * 2, 0);
                     for channel in 0..self.config.channels {
                         let sample = self.sample_at(channel, frame) as f32;
-                        let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                        let pair = self
+                            .iir
+                            .as_mut()
+                            .expect("IIR upsampling path requires initialized IIR state")
+                            .process_up(channel, sample);
                         self.scratch[channel * 2] = f32_to_i16(pair[0]);
                         self.scratch[channel * 2 + 1] = f32_to_i16(pair[1]);
                     }
@@ -759,7 +837,7 @@ impl CoreI16 {
             let pair = self
                 .iir
                 .as_mut()
-                .unwrap()
+                .expect("IIR downsampling path requires initialized IIR state")
                 .process_down_stereo(even_left, even_right, odd_left, odd_right);
             output.push(f32_to_i16(pair[0]));
             output.push(f32_to_i16(pair[1]));
@@ -773,7 +851,11 @@ impl CoreI16 {
             } else {
                 0.0
             };
-            let sample = self.iir.as_mut().unwrap().process_down(channel, even, odd);
+            let sample = self
+                .iir
+                .as_mut()
+                .expect("IIR downsampling path requires initialized IIR state")
+                .process_down(channel, even, odd);
             output.push(f32_to_i16(sample));
         }
     }

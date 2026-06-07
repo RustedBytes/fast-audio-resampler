@@ -1,23 +1,40 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Requested FIR dot-product backend.
+///
+/// `Auto` is recommended for most users because it chooses the best available
+/// backend for the current CPU and build target.
 pub enum FirBackend {
+    /// Select the best supported backend automatically.
     Auto,
+    /// Portable scalar implementation.
     Scalar,
+    /// x86/x86_64 AVX2 plus FMA backend.
     Avx2,
+    /// x86/x86_64 AVX-512F backend for `f32` FIR work.
     Avx512,
+    /// AArch64 NEON backend.
     Neon,
+    /// RISC-V vector backend, available only on builds compiled with RVV.
     Rvv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// FIR backend selected for a constructed resampler.
 pub enum SelectedFirBackend {
+    /// Portable scalar implementation.
     Scalar,
+    /// x86/x86_64 AVX2 plus FMA backend.
     Avx2,
+    /// x86/x86_64 AVX-512F backend for `f32` FIR work.
     Avx512,
+    /// AArch64 NEON backend.
     Neon,
+    /// RISC-V vector backend.
     Rvv,
 }
 
 impl SelectedFirBackend {
+    /// Returns a stable, human-readable backend name.
     #[inline]
     pub fn name(self) -> &'static str {
         match self {
@@ -151,26 +168,24 @@ fn rvv_available() -> bool {
 mod scalar {
     #[inline(always)]
     pub(crate) fn dot_f32(samples: &[f32], coeffs: &[f32]) -> f32 {
-        let mut acc = 0.0f32;
-        for i in 0..samples.len() {
-            // Avoid `mul_add` here: without FMA target features LLVM lowers it
-            // to a libm `fmaf` call, which is much slower than scalar mul/add.
-            unsafe {
-                acc += *samples.get_unchecked(i) * *coeffs.get_unchecked(i);
-            }
-        }
-        acc
+        samples
+            .iter()
+            .zip(coeffs)
+            .fold(0.0f32, |acc, (&sample, &coeff)| {
+                // Avoid `mul_add` here: without FMA target features LLVM lowers it
+                // to a libm `fmaf` call, which is much slower than scalar mul/add.
+                acc + sample * coeff
+            })
     }
 
     #[inline(always)]
     pub(crate) fn dot_i16_q15(samples: &[i16], coeffs: &[i16]) -> i64 {
-        let mut acc = 0i64;
-        for i in 0..samples.len() {
-            unsafe {
-                acc += (*samples.get_unchecked(i) as i64) * (*coeffs.get_unchecked(i) as i64);
-            }
-        }
-        acc
+        samples
+            .iter()
+            .zip(coeffs)
+            .fold(0i64, |acc, (&sample, &coeff)| {
+                acc + sample as i64 * coeff as i64
+            })
     }
 }
 
@@ -180,6 +195,8 @@ mod aarch64 {
 
     #[inline]
     pub(crate) fn dot_f32_neon(samples: &[f32], coeffs: &[f32]) -> f32 {
+        // SAFETY: This module is compiled only for AArch64 where NEON is part of
+        // the architecture, and the caller passes same-length slices.
         unsafe { dot_f32_neon_inner(samples, coeffs) }
     }
 
@@ -189,14 +206,18 @@ mod aarch64 {
         let chunks = samples.len() / 4;
         for chunk in 0..chunks {
             let i = chunk * 4;
+            // SAFETY: `i` advances in 4-lane chunks strictly within `samples`.
             let s = unsafe { vld1q_f32(samples.as_ptr().add(i)) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let c = unsafe { vld1q_f32(coeffs.as_ptr().add(i)) };
             acc = vfmaq_f32(acc, s, c);
         }
 
         let mut total = vaddvq_f32(acc);
         for i in chunks * 4..samples.len() {
+            // SAFETY: tail indices are in `chunks * 4..samples.len()`.
             let sample = unsafe { *samples.get_unchecked(i) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let coeff = unsafe { *coeffs.get_unchecked(i) };
             total = sample.mul_add(coeff, total);
         }
@@ -205,6 +226,8 @@ mod aarch64 {
 
     #[inline]
     pub(crate) fn dot_i16_q15_neon(samples: &[i16], coeffs: &[i16]) -> i64 {
+        // SAFETY: This module is compiled only for AArch64 where NEON is part of
+        // the architecture, and the caller passes same-length slices.
         unsafe { dot_i16_q15_neon_inner(samples, coeffs) }
     }
 
@@ -214,7 +237,9 @@ mod aarch64 {
         let chunks = samples.len() / 8;
         for chunk in 0..chunks {
             let i = chunk * 8;
+            // SAFETY: `i` advances in 8-lane chunks strictly within `samples`.
             let s = unsafe { vld1q_s16(samples.as_ptr().add(i)) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let c = unsafe { vld1q_s16(coeffs.as_ptr().add(i)) };
             let products_low = vmull_s16(vget_low_s16(s), vget_low_s16(c));
             let products_high = vmull_s16(vget_high_s16(s), vget_high_s16(c));
@@ -224,7 +249,9 @@ mod aarch64 {
 
         let mut total = vaddvq_s64(acc);
         for i in chunks * 8..samples.len() {
+            // SAFETY: tail indices are in `chunks * 8..samples.len()`.
             let sample = unsafe { *samples.get_unchecked(i) as i64 };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let coeff = unsafe { *coeffs.get_unchecked(i) as i64 };
             total += sample * coeff;
         }
@@ -254,6 +281,8 @@ mod x86 {
 
     #[inline]
     pub(crate) fn dot_f32_avx2(samples: &[f32], coeffs: &[f32]) -> f32 {
+        // SAFETY: This backend is selected only after AVX2/FMA feature
+        // detection, and the caller passes same-length slices.
         unsafe { dot_f32_avx2_inner(samples, coeffs) }
     }
 
@@ -263,15 +292,20 @@ mod x86 {
         let chunks = samples.len() / 8;
         for chunk in 0..chunks {
             let i = chunk * 8;
+            // SAFETY: `i` advances in 8-lane chunks strictly within `samples`.
             let s = unsafe { _mm256_loadu_ps(samples.as_ptr().add(i)) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let c = unsafe { _mm256_loadu_ps(coeffs.as_ptr().add(i)) };
             acc = _mm256_fmadd_ps(s, c, acc);
         }
         let mut lanes = [0.0f32; 8];
+        // SAFETY: `lanes` has exactly 8 `f32` slots for one AVX register.
         unsafe { _mm256_storeu_ps(lanes.as_mut_ptr(), acc) };
         let mut total = lanes.iter().copied().sum::<f32>();
         for i in chunks * 8..samples.len() {
+            // SAFETY: tail indices are in `chunks * 8..samples.len()`.
             let sample = unsafe { *samples.get_unchecked(i) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let coeff = unsafe { *coeffs.get_unchecked(i) };
             total = sample.mul_add(coeff, total);
         }
@@ -280,6 +314,8 @@ mod x86 {
 
     #[inline]
     pub(crate) fn dot_f32_avx512(samples: &[f32], coeffs: &[f32]) -> f32 {
+        // SAFETY: This backend is selected only after AVX-512F feature
+        // detection, and the caller passes same-length slices.
         unsafe { dot_f32_avx512_inner(samples, coeffs) }
     }
 
@@ -289,15 +325,20 @@ mod x86 {
         let chunks = samples.len() / 16;
         for chunk in 0..chunks {
             let i = chunk * 16;
+            // SAFETY: `i` advances in 16-lane chunks strictly within `samples`.
             let s = unsafe { _mm512_loadu_ps(samples.as_ptr().add(i)) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let c = unsafe { _mm512_loadu_ps(coeffs.as_ptr().add(i)) };
             acc = _mm512_fmadd_ps(s, c, acc);
         }
         let mut lanes = [0.0f32; 16];
+        // SAFETY: `lanes` has exactly 16 `f32` slots for one AVX-512 register.
         unsafe { _mm512_storeu_ps(lanes.as_mut_ptr(), acc) };
         let mut total = lanes.iter().copied().sum::<f32>();
         for i in chunks * 16..samples.len() {
+            // SAFETY: tail indices are in `chunks * 16..samples.len()`.
             let sample = unsafe { *samples.get_unchecked(i) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let coeff = unsafe { *coeffs.get_unchecked(i) };
             total = sample.mul_add(coeff, total);
         }
@@ -306,6 +347,8 @@ mod x86 {
 
     #[inline]
     pub(crate) fn dot_i16_q15_avx2(samples: &[i16], coeffs: &[i16]) -> i64 {
+        // SAFETY: This backend is selected only after AVX2 feature detection,
+        // and the caller passes same-length slices.
         unsafe { dot_i16_q15_avx2_inner(samples, coeffs) }
     }
 
@@ -315,17 +358,22 @@ mod x86 {
         let chunks = samples.len() / 16;
         for chunk in 0..chunks {
             let i = chunk * 16;
+            // SAFETY: `i` advances in 16-lane chunks strictly within `samples`.
             let s = unsafe { _mm256_loadu_si256(samples.as_ptr().add(i).cast::<__m256i>()) };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let c = unsafe { _mm256_loadu_si256(coeffs.as_ptr().add(i).cast::<__m256i>()) };
             let products = _mm256_madd_epi16(s, c);
             acc = _mm256_add_epi32(acc, products);
         }
 
         let mut lanes = [0i32; 8];
+        // SAFETY: `lanes` has exactly 8 `i32` slots for one AVX integer register.
         unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast::<__m256i>(), acc) };
         let mut total = lanes.iter().map(|&lane| lane as i64).sum::<i64>();
         for i in chunks * 16..samples.len() {
+            // SAFETY: tail indices are in `chunks * 16..samples.len()`.
             let sample = unsafe { *samples.get_unchecked(i) as i64 };
+            // SAFETY: `coeffs` has the same length as `samples`.
             let coeff = unsafe { *coeffs.get_unchecked(i) as i64 };
             total += sample * coeff;
         }
@@ -357,6 +405,8 @@ mod riscv64 {
 
     #[inline]
     pub(crate) fn dot_f32_rvv(samples: &[f32], coeffs: &[f32]) -> f32 {
+        // SAFETY: This module is compiled only when RVV is enabled, and the
+        // caller passes same-length slices.
         unsafe { dot_f32_rvv_inner(samples, coeffs) }
     }
 
@@ -366,6 +416,8 @@ mod riscv64 {
         let mut remaining = samples.len();
         let mut total: f32;
 
+        // SAFETY: Pointers are derived from valid slices, RVV vector length is
+        // clamped to `remaining`, and pointer increments consume that length.
         unsafe {
             asm!(
                 "vsetvli t0, zero, e32, m1, ta, ma",
@@ -408,6 +460,9 @@ mod riscv64 {
         if samples.len() > 128 {
             return super::scalar::dot_i16_q15(samples, coeffs);
         }
+        // SAFETY: This module is compiled only when RVV is enabled, the caller
+        // passes same-length slices, and lengths above the scratch size fall
+        // back to the scalar path above.
         unsafe { dot_i16_q15_rvv_inner(samples, coeffs) }
     }
 
@@ -420,6 +475,8 @@ mod riscv64 {
 
         while remaining > 0 {
             let mut vl = remaining;
+            // SAFETY: Pointers are derived from valid slices, `vl` is chosen
+            // from `remaining`, and `products` has room for the capped length.
             unsafe {
                 asm!(
                     "vsetvli {vl}, {vl}, e16, m1, ta, ma",
@@ -446,7 +503,10 @@ mod riscv64 {
             for &product in &products[..vl] {
                 total += product as i64;
             }
+            // SAFETY: `vl <= remaining`, so advancing stays within or one past
+            // the original slices.
             samples_ptr = unsafe { samples_ptr.add(vl) };
+            // SAFETY: `coeffs` has the same length and advancement as `samples`.
             coeffs_ptr = unsafe { coeffs_ptr.add(vl) };
             remaining -= vl;
         }

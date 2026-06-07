@@ -171,6 +171,8 @@ mod x86 {
         coeffs: [f32; 2],
         state: [[f32; 2]; 2],
     ) -> [[f32; 2]; 2] {
+        // SAFETY: This backend is called only on x86/x86_64 targets where SSE2
+        // is available for x86_64 and explicitly detected before x86 use.
         unsafe { allpass_pair_stereo_sse2_inner(signal, next_state, coeffs, state) }
     }
 
@@ -182,7 +184,10 @@ mod x86 {
         state: [[f32; 2]; 2],
     ) -> [[f32; 2]; 2] {
         [
+            // SAFETY: The caller enabled the same target features on this
+            // function; all inputs are fixed-size value arrays.
             unsafe { allpass_lane(signal[0], next_state[0], coeffs[0], state[0]) },
+            // SAFETY: Same as above for the second all-pass lane.
             unsafe { allpass_lane(signal[1], next_state[1], coeffs[1], state[1]) },
         ]
     }
@@ -200,6 +205,7 @@ mod x86 {
         let state = _mm_setr_ps(state[0], state[1], 0.0, 0.0);
         let out = _mm_add_ps(_mm_mul_ps(_mm_sub_ps(signal, next_state), coeff), state);
         let mut lanes = [0.0f32; 4];
+        // SAFETY: `lanes` has exactly 4 `f32` slots for one SSE register.
         unsafe { _mm_storeu_ps(lanes.as_mut_ptr(), out) };
         [lanes[0], lanes[1]]
     }
@@ -229,6 +235,8 @@ mod aarch64 {
         coeffs: [f32; 2],
         state: [[f32; 2]; 2],
     ) -> [[f32; 2]; 2] {
+        // SAFETY: This module is compiled only for AArch64 where NEON is part
+        // of the architecture.
         unsafe { allpass_pair_stereo_neon_inner(signal, next_state, coeffs, state) }
     }
 
@@ -252,11 +260,16 @@ mod aarch64 {
         coeff: f32,
         state: [f32; 2],
     ) -> [f32; 2] {
+        // SAFETY: Each source array has exactly two contiguous `f32` lanes.
         let signal = unsafe { vld1_f32(signal.as_ptr()) };
+        // SAFETY: Each source array has exactly two contiguous `f32` lanes.
         let next_state = unsafe { vld1_f32(next_state.as_ptr()) };
+        // SAFETY: Each source array has exactly two contiguous `f32` lanes.
         let state = unsafe { vld1_f32(state.as_ptr()) };
+        // SAFETY: NEON is available for this module; operands are valid lanes.
         let out = unsafe { vmla_f32(state, vsub_f32(signal, next_state), vdup_n_f32(coeff)) };
         let mut lanes = [0.0f32; 2];
+        // SAFETY: `lanes` has exactly 2 `f32` slots for one NEON f32x2 value.
         unsafe { vst1_f32(lanes.as_mut_ptr(), out) };
         lanes
     }
@@ -287,7 +300,10 @@ mod riscv64 {
         state: [[f32; 2]; 2],
     ) -> [[f32; 2]; 2] {
         [
+            // SAFETY: This module is compiled only with RVV enabled, and all
+            // pointers used by the callee come from fixed-size arrays.
             unsafe { allpass_lane(signal[0], next_state[0], coeffs[0], state[0]) },
+            // SAFETY: Same as above for the second all-pass lane.
             unsafe { allpass_lane(signal[1], next_state[1], coeffs[1], state[1]) },
         ]
     }
@@ -300,6 +316,8 @@ mod riscv64 {
         state: [f32; 2],
     ) -> [f32; 2] {
         let mut out = [0.0f32; 2];
+        // SAFETY: All pointers come from live two-element arrays, and the
+        // assembly vector length is fixed to exactly those two lanes.
         unsafe {
             asm!(
                 "vsetivli zero, 2, e32, m1, ta, ma",
@@ -340,31 +358,39 @@ mod riscv64 {
 mod tests {
     use super::*;
 
-    fn sample_inputs() -> ([[f32; 2]; 2], [[f32; 2]; 2], [f32; 2], [[f32; 2]; 2]) {
-        (
-            [[0.25, -0.5], [0.75, 0.125]],
-            [[-0.125, 0.375], [0.5, -0.25]],
-            [0.29505825, 0.7137337],
-            [[0.01, -0.02], [0.03, -0.04]],
-        )
+    #[derive(Debug, Clone, Copy)]
+    struct StereoFixture {
+        signal: [[f32; 2]; 2],
+        next_state: [[f32; 2]; 2],
+        coeffs: [f32; 2],
+        state: [[f32; 2]; 2],
+    }
+
+    fn sample_inputs() -> StereoFixture {
+        StereoFixture {
+            signal: [[0.25, -0.5], [0.75, 0.125]],
+            next_state: [[-0.125, 0.375], [0.5, -0.25]],
+            coeffs: [0.29505825, 0.7137337],
+            state: [[0.01, -0.02], [0.03, -0.04]],
+        }
     }
 
     #[test]
     fn stereo_auto_iir_backend_matches_scalar() {
-        let (signal, next_state, coeffs, state) = sample_inputs();
+        let fixture = sample_inputs();
         let scalar = allpass_pair_stereo(
             SelectedIirBackend::Scalar,
-            signal,
-            next_state,
-            coeffs,
-            state,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
         );
         let auto = allpass_pair_stereo(
             SelectedIirBackend::auto_select(),
-            signal,
-            next_state,
-            coeffs,
-            state,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
         );
         assert_eq!(scalar, auto);
     }
@@ -372,45 +398,63 @@ mod tests {
     #[test]
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn stereo_sse2_iir_backend_matches_scalar() {
-        let (signal, next_state, coeffs, state) = sample_inputs();
+        let fixture = sample_inputs();
         let scalar = allpass_pair_stereo(
             SelectedIirBackend::Scalar,
-            signal,
-            next_state,
-            coeffs,
-            state,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
         );
-        let sse2 = allpass_pair_stereo(SelectedIirBackend::Sse2, signal, next_state, coeffs, state);
+        let sse2 = allpass_pair_stereo(
+            SelectedIirBackend::Sse2,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
+        );
         assert_eq!(scalar, sse2);
     }
 
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn stereo_neon_iir_backend_matches_scalar() {
-        let (signal, next_state, coeffs, state) = sample_inputs();
+        let fixture = sample_inputs();
         let scalar = allpass_pair_stereo(
             SelectedIirBackend::Scalar,
-            signal,
-            next_state,
-            coeffs,
-            state,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
         );
-        let neon = allpass_pair_stereo(SelectedIirBackend::Neon, signal, next_state, coeffs, state);
+        let neon = allpass_pair_stereo(
+            SelectedIirBackend::Neon,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
+        );
         assert_eq!(scalar, neon);
     }
 
     #[test]
     #[cfg(all(target_arch = "riscv64", target_feature = "v"))]
     fn stereo_rvv_iir_backend_matches_scalar() {
-        let (signal, next_state, coeffs, state) = sample_inputs();
+        let fixture = sample_inputs();
         let scalar = allpass_pair_stereo(
             SelectedIirBackend::Scalar,
-            signal,
-            next_state,
-            coeffs,
-            state,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
         );
-        let rvv = allpass_pair_stereo(SelectedIirBackend::Rvv, signal, next_state, coeffs, state);
+        let rvv = allpass_pair_stereo(
+            SelectedIirBackend::Rvv,
+            fixture.signal,
+            fixture.next_state,
+            fixture.coeffs,
+            fixture.state,
+        );
         assert_eq!(scalar, rvv);
     }
 }

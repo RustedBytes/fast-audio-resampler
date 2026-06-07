@@ -3,12 +3,19 @@ use std::fmt;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Error returned by resampler construction and processing operations.
 pub enum Error {
+    /// Input or output sample rate was zero.
     InvalidSampleRate,
+    /// Channel count was zero.
     InvalidChannels,
+    /// Input sample count was not divisible by the configured channel count.
     InputNotFrameAligned { samples: usize, channels: usize },
+    /// Fixed output slice did not have enough sample capacity.
     OutputTooSmall { required: usize, available: usize },
+    /// Requested backend is unavailable on the current CPU or build target.
     UnsupportedBackend(&'static str),
+    /// Command-line interface error.
     Cli(String),
 }
 
