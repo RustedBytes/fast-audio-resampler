@@ -45,18 +45,77 @@ Exact `8k <-> 16k` conversions use two different engines depending on quality:
 
 ### x86_64
 
-Focused `Quality::Fast` IIR results on x86_64:
+`Quality::Fast` IIR results on x86_64:
 
 | Format | Ratio | Channels | FIR Backend | Mode | Median |
 | --- | --- | ---: | --- | --- | ---: |
-| `f32` | 8k -> 16k | 1 | scalar | one-shot | 68 us |
-| `i16` | 8k -> 16k | 1 | scalar | one-shot | 169 us |
-| `f32` | 8k -> 16k | 2 | scalar | one-shot | 111 us |
-| `i16` | 8k -> 16k | 2 | scalar | one-shot | 207 us |
-| `f32` | 8k -> 16k | 2 | auto | streaming, 64-frame chunks | 129 us |
-| `i16` | 8k -> 16k | 2 | auto | streaming, 64-frame chunks | 204 us |
+| `f32` | 8k -> 16k | 1 | scalar | one-shot | 72.741 us |
+| `i16` | 8k -> 16k | 1 | scalar | one-shot | 122.27 us |
+| `f32` | 8k -> 16k | 1 | auto | one-shot | 75.437 us |
+| `i16` | 8k -> 16k | 1 | auto | one-shot | 122.11 us |
+| `f32` | 8k -> 16k | 2 | scalar | one-shot | 113.57 us |
+| `i16` | 8k -> 16k | 2 | scalar | one-shot | 215.01 us |
+| `f32` | 8k -> 16k | 2 | auto | one-shot | 114.21 us |
+| `i16` | 8k -> 16k | 2 | auto | one-shot | 209.43 us |
+| `f32` | 16k -> 8k | 1 | scalar | one-shot | 132.63 us |
+| `i16` | 16k -> 8k | 1 | scalar | one-shot | 187.26 us |
+| `f32` | 16k -> 8k | 1 | auto | one-shot | 133.90 us |
+| `i16` | 16k -> 8k | 1 | auto | one-shot | 177.19 us |
+| `f32` | 16k -> 8k | 2 | scalar | one-shot | 190.97 us |
+| `i16` | 16k -> 8k | 2 | scalar | one-shot | 264.89 us |
+| `f32` | 16k -> 8k | 2 | auto | one-shot | 192.58 us |
+| `i16` | 16k -> 8k | 2 | auto | one-shot | 241.18 us |
+| `f32` | 8k -> 16k | 2 | auto | streaming, 64-frame chunks | 183.40 us |
+| `i16` | 8k -> 16k | 2 | auto | streaming, 64-frame chunks | 273.88 us |
+| `f32` | 16k -> 8k | 2 | auto | streaming, 64-frame chunks | 288.59 us |
+| `i16` | 16k -> 8k | 2 | auto | streaming, 64-frame chunks | 381.17 us |
 
-General-ratio FIR benchmarks are still emitted by the same Criterion suite under labels such as `f32/44k1_to_48k/2ch/auto`.
+`Quality::Balanced` FIR half-band results on x86_64:
+
+| Format | Ratio | Channels | FIR Backend | Mode | Median |
+| --- | --- | ---: | --- | --- | ---: |
+| `f32` | 8k -> 16k | 1 | scalar | one-shot | 410.61 us |
+| `i16` | 8k -> 16k | 1 | scalar | one-shot | 422.92 us |
+| `f32` | 8k -> 16k | 1 | auto | one-shot | 407.42 us |
+| `i16` | 8k -> 16k | 1 | auto | one-shot | 411.30 us |
+| `f32` | 8k -> 16k | 2 | scalar | one-shot | 784.18 us |
+| `i16` | 8k -> 16k | 2 | scalar | one-shot | 854.23 us |
+| `f32` | 8k -> 16k | 2 | auto | one-shot | 804.98 us |
+| `i16` | 8k -> 16k | 2 | auto | one-shot | 890.49 us |
+| `f32` | 16k -> 8k | 1 | scalar | one-shot | 403.95 us |
+| `i16` | 16k -> 8k | 1 | scalar | one-shot | 417.35 us |
+| `f32` | 16k -> 8k | 1 | auto | one-shot | 427.03 us |
+| `i16` | 16k -> 8k | 1 | auto | one-shot | 412.09 us |
+| `f32` | 16k -> 8k | 2 | scalar | one-shot | 794.36 us |
+| `i16` | 16k -> 8k | 2 | scalar | one-shot | 861.91 us |
+| `f32` | 16k -> 8k | 2 | auto | one-shot | 834.62 us |
+| `i16` | 16k -> 8k | 2 | auto | one-shot | 853.38 us |
+| `f32` | 8k -> 16k | 2 | auto | streaming, 64-frame chunks | 1.0462 ms |
+| `i16` | 8k -> 16k | 2 | auto | streaming, 64-frame chunks | 1.2621 ms |
+| `f32` | 16k -> 8k | 2 | auto | streaming, 64-frame chunks | 1.1097 ms |
+| `i16` | 16k -> 8k | 2 | auto | streaming, 64-frame chunks | 1.0886 ms |
+
+General-ratio `Quality::Balanced` FIR results on x86_64:
+
+| Format | Ratio | Channels | FIR Backend | Mode | Median |
+| --- | --- | ---: | --- | --- | ---: |
+| `f32` | 44.1k -> 48k | 1 | scalar | one-shot | 6.3880 ms |
+| `i16` | 44.1k -> 48k | 1 | scalar | one-shot | 6.4852 ms |
+| `f32` | 44.1k -> 48k | 1 | auto | one-shot | 5.8639 ms |
+| `i16` | 44.1k -> 48k | 1 | auto | one-shot | 5.6396 ms |
+| `f32` | 44.1k -> 48k | 2 | scalar | one-shot | 13.026 ms |
+| `i16` | 44.1k -> 48k | 2 | scalar | one-shot | 14.342 ms |
+| `f32` | 44.1k -> 48k | 2 | auto | one-shot | 14.945 ms |
+| `i16` | 44.1k -> 48k | 2 | auto | one-shot | 10.145 ms |
+| `f32` | 48k -> 44.1k | 1 | scalar | one-shot | 5.6738 ms |
+| `i16` | 48k -> 44.1k | 1 | scalar | one-shot | 6.0230 ms |
+| `f32` | 48k -> 44.1k | 1 | auto | one-shot | 5.2813 ms |
+| `i16` | 48k -> 44.1k | 1 | auto | one-shot | 6.0168 ms |
+| `f32` | 48k -> 44.1k | 2 | scalar | one-shot | 12.333 ms |
+| `i16` | 48k -> 44.1k | 2 | scalar | one-shot | 10.919 ms |
+| `f32` | 48k -> 44.1k | 2 | auto | one-shot | 10.069 ms |
+| `i16` | 48k -> 44.1k | 2 | auto | one-shot | 9.4516 ms |
+| `f32` | 48k -> 44.1k | 2 | auto | streaming, 64-frame chunks | 13.213 ms |
 
 ### AArch64 ARM
 
