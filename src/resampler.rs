@@ -4,6 +4,7 @@ use crate::backend::{self, SelectedFirBackend};
 use crate::error::frame_alignment_error;
 use crate::filter::FilterBank;
 use crate::iir::PolyphaseIir2x;
+use crate::iir_backend::SelectedIirBackend;
 use crate::ring::RingBuffer;
 use crate::{Error, Quality, ResamplerConfig, Result};
 
@@ -923,9 +924,14 @@ fn init_common<T: Copy + Default>(config: ResamplerConfig) -> Result<CommonInit<
         (16_000, 8_000) => SpecialRatio::Down2,
         _ => SpecialRatio::General,
     };
+    let iir_backend = SelectedIirBackend::from_fir_backend(backend);
     let iir = match (config.quality, special_ratio) {
-        (Quality::Fast, SpecialRatio::Up2) => Some(PolyphaseIir2x::up(config.channels)),
-        (Quality::Fast, SpecialRatio::Down2) => Some(PolyphaseIir2x::down(config.channels)),
+        (Quality::Fast, SpecialRatio::Up2) => {
+            Some(PolyphaseIir2x::up(config.channels, iir_backend))
+        }
+        (Quality::Fast, SpecialRatio::Down2) => {
+            Some(PolyphaseIir2x::down(config.channels, iir_backend))
+        }
         _ => None,
     };
     Ok(CommonInit {

@@ -34,19 +34,19 @@ pub(crate) struct Iir2xStereoFilter {
 }
 
 impl PolyphaseIir2x {
-    pub(crate) fn up(channels: usize) -> Self {
+    pub(crate) fn up(channels: usize, backend: SelectedIirBackend) -> Self {
         if channels == 2 {
-            Self::UpStereo(Iir2xStereoFilter::fast())
+            Self::UpStereo(Iir2xStereoFilter::fast(backend))
         } else {
-            Self::Up((0..channels).map(|_| Iir2xFilter::fast()).collect())
+            Self::Up((0..channels).map(|_| Iir2xFilter::fast(backend)).collect())
         }
     }
 
-    pub(crate) fn down(channels: usize) -> Self {
+    pub(crate) fn down(channels: usize, backend: SelectedIirBackend) -> Self {
         if channels == 2 {
-            Self::DownStereo(Iir2xStereoFilter::fast())
+            Self::DownStereo(Iir2xStereoFilter::fast(backend))
         } else {
-            Self::Down((0..channels).map(|_| Iir2xFilter::fast()).collect())
+            Self::Down((0..channels).map(|_| Iir2xFilter::fast(backend)).collect())
         }
     }
 
@@ -121,11 +121,11 @@ impl PolyphaseIir2x {
 }
 
 impl Iir2xFilter {
-    fn fast() -> Self {
-        Self::new(&FAST_IIR_COEFFS)
+    fn fast(backend: SelectedIirBackend) -> Self {
+        Self::new(&FAST_IIR_COEFFS, backend)
     }
 
-    fn new(coeff_arr: &[f32]) -> Self {
+    fn new(coeff_arr: &[f32], backend: SelectedIirBackend) -> Self {
         debug_assert!(coeff_arr.len().is_multiple_of(2));
         let coeffs: Vec<[f32; 2]> = coeff_arr
             .chunks_exact(2)
@@ -133,7 +133,7 @@ impl Iir2xFilter {
             .collect();
         let states = vec![[0.0; 2]; coeffs.len()];
         Self {
-            backend: SelectedIirBackend::auto_select(),
+            backend,
             coeffs,
             states,
             last_state: [0.0; 2],
@@ -142,6 +142,10 @@ impl Iir2xFilter {
 
     #[inline]
     fn process_pair(&mut self, s0: f32, s1: f32) -> [f32; 2] {
+        if self.backend == SelectedIirBackend::Scalar {
+            return self.process_pair_scalar(s0, s1);
+        }
+
         let mut signal = [s1, s0];
         let last = self.coeffs.len() - 1;
 
@@ -169,14 +173,38 @@ impl Iir2xFilter {
         self.last_state = tmp;
         tmp
     }
+
+    #[inline]
+    fn process_pair_scalar(&mut self, s0: f32, s1: f32) -> [f32; 2] {
+        let mut signal = [s1, s0];
+        let last = self.coeffs.len() - 1;
+
+        for i in 0..last {
+            let next_state = self.states[i + 1];
+            let tmp = [
+                (signal[0] - next_state[0]) * self.coeffs[i][0] + self.states[i][0],
+                (signal[1] - next_state[1]) * self.coeffs[i][1] + self.states[i][1],
+            ];
+            self.states[i] = signal;
+            signal = tmp;
+        }
+
+        let tmp = [
+            (signal[0] - self.last_state[0]) * self.coeffs[last][0] + self.states[last][0],
+            (signal[1] - self.last_state[1]) * self.coeffs[last][1] + self.states[last][1],
+        ];
+        self.states[last] = signal;
+        self.last_state = tmp;
+        tmp
+    }
 }
 
 impl Iir2xStereoFilter {
-    fn fast() -> Self {
-        Self::new(&FAST_IIR_COEFFS)
+    fn fast(backend: SelectedIirBackend) -> Self {
+        Self::new(&FAST_IIR_COEFFS, backend)
     }
 
-    fn new(coeff_arr: &[f32]) -> Self {
+    fn new(coeff_arr: &[f32], backend: SelectedIirBackend) -> Self {
         debug_assert!(coeff_arr.len().is_multiple_of(2));
         let coeffs: Vec<[f32; 2]> = coeff_arr
             .chunks_exact(2)
@@ -184,7 +212,7 @@ impl Iir2xStereoFilter {
             .collect();
         let states = vec![[[0.0; 2]; 2]; coeffs.len()];
         Self {
-            backend: SelectedIirBackend::auto_select(),
+            backend,
             coeffs,
             states,
             last_state: [[0.0; 2]; 2],
@@ -193,6 +221,10 @@ impl Iir2xStereoFilter {
 
     #[inline]
     fn process_pair(&mut self, s0: [f32; 2], s1: [f32; 2]) -> [[f32; 2]; 2] {
+        if self.backend == SelectedIirBackend::Scalar {
+            return self.process_pair_scalar(s0, s1);
+        }
+
         let mut signal = [s1, s0];
         let last = self.coeffs.len() - 1;
 
@@ -220,6 +252,46 @@ impl Iir2xStereoFilter {
         self.last_state = tmp;
         tmp
     }
+
+    #[inline]
+    fn process_pair_scalar(&mut self, s0: [f32; 2], s1: [f32; 2]) -> [[f32; 2]; 2] {
+        let mut signal = [s1, s0];
+        let last = self.coeffs.len() - 1;
+
+        for i in 0..last {
+            let next_state = self.states[i + 1];
+            let tmp = [
+                [
+                    (signal[0][0] - next_state[0][0]) * self.coeffs[i][0] + self.states[i][0][0],
+                    (signal[0][1] - next_state[0][1]) * self.coeffs[i][0] + self.states[i][0][1],
+                ],
+                [
+                    (signal[1][0] - next_state[1][0]) * self.coeffs[i][1] + self.states[i][1][0],
+                    (signal[1][1] - next_state[1][1]) * self.coeffs[i][1] + self.states[i][1][1],
+                ],
+            ];
+            self.states[i] = signal;
+            signal = tmp;
+        }
+
+        let tmp = [
+            [
+                (signal[0][0] - self.last_state[0][0]) * self.coeffs[last][0]
+                    + self.states[last][0][0],
+                (signal[0][1] - self.last_state[0][1]) * self.coeffs[last][0]
+                    + self.states[last][0][1],
+            ],
+            [
+                (signal[1][0] - self.last_state[1][0]) * self.coeffs[last][1]
+                    + self.states[last][1][0],
+                (signal[1][1] - self.last_state[1][1]) * self.coeffs[last][1]
+                    + self.states[last][1][1],
+            ],
+        ];
+        self.states[last] = signal;
+        self.last_state = tmp;
+        tmp
+    }
 }
 
 #[cfg(test)]
@@ -228,12 +300,12 @@ mod tests {
 
     #[test]
     fn polyphase_iir_filters_silence_to_silence() {
-        let mut up = PolyphaseIir2x::up(1);
+        let mut up = PolyphaseIir2x::up(1, SelectedIirBackend::Scalar);
         for _ in 0..16 {
             assert_eq!(up.process_up(0, 0.0), [0.0, 0.0]);
         }
 
-        let mut down = PolyphaseIir2x::down(1);
+        let mut down = PolyphaseIir2x::down(1, SelectedIirBackend::Scalar);
         for _ in 0..16 {
             assert_eq!(down.process_down(0, 0.0, 0.0), 0.0);
         }
@@ -241,7 +313,7 @@ mod tests {
 
     #[test]
     fn polyphase_iir_down_filters_alternating_high_frequency() {
-        let mut down = PolyphaseIir2x::down(1);
+        let mut down = PolyphaseIir2x::down(1, SelectedIirBackend::Scalar);
         let output: Vec<f32> = (0..64).map(|_| down.process_down(0, 1.0, -1.0)).collect();
         let tail_mean = output[32..].iter().map(|sample| sample.abs()).sum::<f32>() / 32.0;
         assert!(tail_mean < 0.1, "tail mean {tail_mean}");
@@ -249,10 +321,10 @@ mod tests {
 
     #[test]
     fn stereo_iir_matches_two_independent_mono_upsamplers() {
-        let mut stereo = PolyphaseIir2x::up(2);
+        let mut stereo = PolyphaseIir2x::up(2, SelectedIirBackend::auto_select());
         assert!(stereo.is_stereo());
-        let mut left = PolyphaseIir2x::up(1);
-        let mut right = PolyphaseIir2x::up(1);
+        let mut left = PolyphaseIir2x::up(1, SelectedIirBackend::Scalar);
+        let mut right = PolyphaseIir2x::up(1, SelectedIirBackend::Scalar);
 
         for i in 0..64 {
             let l = ((i as f32) * 0.03).sin();
@@ -267,10 +339,10 @@ mod tests {
 
     #[test]
     fn stereo_iir_matches_two_independent_mono_downsamplers() {
-        let mut stereo = PolyphaseIir2x::down(2);
+        let mut stereo = PolyphaseIir2x::down(2, SelectedIirBackend::auto_select());
         assert!(stereo.is_stereo());
-        let mut left = PolyphaseIir2x::down(1);
-        let mut right = PolyphaseIir2x::down(1);
+        let mut left = PolyphaseIir2x::down(1, SelectedIirBackend::Scalar);
+        let mut right = PolyphaseIir2x::down(1, SelectedIirBackend::Scalar);
 
         for i in 0..64 {
             let even_l = ((i as f32) * 0.03).sin();
