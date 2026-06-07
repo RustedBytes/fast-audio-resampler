@@ -2,7 +2,7 @@
 
 Use one `Resampler<T>` per audio stream. In a WebSocket server, that usually means one resampler per connected client, room participant, or upstream audio track.
 
-Do not share one resampler across clients: the resampler owns FIR history, ring-buffer state, and sample-rate phase position.
+Do not share one resampler across clients: the resampler owns filter history, IIR state when selected, ring-buffer state, and sample-rate phase position.
 
 ## Session State
 
@@ -87,7 +87,7 @@ If the output slice is too small, the call returns `Error::OutputTooSmall` and d
 
 ## Stream Boundaries
 
-Call `flush` when an audio stream ends and you want the final FIR tail.
+Call `flush` when an audio stream ends and you want the final filter tail. For exact `8_000 <-> 16_000` conversions at `Quality::Fast`, this also drains any pending IIR downsampling pair.
 
 ```rust
 # use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
@@ -126,8 +126,8 @@ resampler.reset();
 For each WebSocket audio packet:
 
 - Append cost: `O(N * C)`
-- Resampling cost: `O(M * C * T)`
+- Resampling cost: `O(M * C * T)` for FIR paths; `O(M * C * S)` for the exact `8_000 <-> 16_000` IIR fast path
 - Ring-buffer discard: `O(C)`
 
-Where `N` is input frames, `M` is output frames, `C` is channel count, and `T` is FIR taps for the selected quality.
+Where `N` is input frames, `M` is output frames, `C` is channel count, `T` is FIR taps for the selected quality, and `S` is the small fixed IIR all-pass stage count.
 

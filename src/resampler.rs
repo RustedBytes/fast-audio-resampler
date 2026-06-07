@@ -1284,6 +1284,56 @@ mod tests {
     }
 
     #[test]
+    fn f32_polyphase_iir_chunked_matches_one_shot_with_odd_boundaries() {
+        for (input_rate, output_rate, frames, chunk_samples) in
+            [(8_000, 16_000, 161, 10), (16_000, 8_000, 321, 14)]
+        {
+            let input: Vec<f32> = (0..frames)
+                .flat_map(|i| {
+                    let l = ((i as f32) * 0.04).sin();
+                    let r = ((i as f32) * 0.07).cos();
+                    [l, r]
+                })
+                .collect();
+
+            let mut one = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut one_out = Vec::new();
+            one.process(&input, &mut one_out).unwrap();
+            one.finish(&mut one_out).unwrap();
+
+            let mut chunked = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut chunked_out = Vec::new();
+            for chunk in input.chunks(chunk_samples) {
+                chunked.process(chunk, &mut chunked_out).unwrap();
+            }
+            chunked.finish(&mut chunked_out).unwrap();
+
+            assert_eq!(one_out, chunked_out);
+        }
+    }
+
+    #[test]
+    fn fast_exact_8k_16k_streaming_uses_iir_and_balanced_uses_fir_half_band() {
+        let fast_up = Resampler::<f32>::new(cfg(8_000, 16_000, 2)).unwrap();
+        let fast_down = Resampler::<f32>::new(cfg(16_000, 8_000, 2)).unwrap();
+        let balanced_up =
+            Resampler::<f32>::new(cfg_with_quality(8_000, 16_000, 2, Quality::Balanced)).unwrap();
+
+        match fast_up.inner {
+            Inner::F32(core) => assert!(core.iir.is_some()),
+            Inner::I16(_) => unreachable!(),
+        }
+        match fast_down.inner {
+            Inner::F32(core) => assert!(core.iir.is_some()),
+            Inner::I16(_) => unreachable!(),
+        }
+        match balanced_up.inner {
+            Inner::F32(core) => assert!(core.iir.is_none()),
+            Inner::I16(_) => unreachable!(),
+        }
+    }
+
+    #[test]
     fn special_ratio_chunked_paths_match_one_shot_for_i16_stereo() {
         let input: Vec<i16> = (0..160)
             .flat_map(|i| {
