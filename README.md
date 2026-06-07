@@ -1,6 +1,7 @@
 # fast-audio-resampler
 
 [![Crates.io Version](https://img.shields.io/crates/v/fast-audio-resampler)](https://crates.io/crates/fast-audio-resampler)
+[![CI](https://github.com/RustedBytes/fast-audio-resampler/actions/workflows/ci.yml/badge.svg)](https://github.com/RustedBytes/fast-audio-resampler/actions/workflows/ci.yml)
 
 Fast streaming audio resampling for Rust, focused on x86/x86_64, AArch64 ARM, and RISC-V CPUs.
 
