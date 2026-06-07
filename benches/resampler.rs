@@ -2,11 +2,27 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
 
 fn config(input_rate: u32, output_rate: u32, channels: usize, backend: Backend) -> ResamplerConfig {
+    config_with_quality(
+        input_rate,
+        output_rate,
+        channels,
+        backend,
+        Quality::Balanced,
+    )
+}
+
+fn config_with_quality(
+    input_rate: u32,
+    output_rate: u32,
+    channels: usize,
+    backend: Backend,
+    quality: Quality,
+) -> ResamplerConfig {
     ResamplerConfig {
         input_rate,
         output_rate,
         channels,
-        quality: Quality::Balanced,
+        quality,
         backend,
         max_input_frames_per_chunk: Some(1024),
     }
@@ -31,14 +47,26 @@ fn i16_input(frames: usize, channels: usize) -> Vec<i16> {
 
 fn bench_resampler(c: &mut Criterion) {
     let ratios = [
-        ("8k_to_16k_halfband", 8_000, 16_000),
-        ("16k_to_8k_halfband", 16_000, 8_000),
-        ("44k1_to_48k", 44_100, 48_000),
-        ("48k_to_44k1", 48_000, 44_100),
+        ("8k_to_16k_iir_fast", 8_000, 16_000, Quality::Fast),
+        ("16k_to_8k_iir_fast", 16_000, 8_000, Quality::Fast),
+        (
+            "8k_to_16k_halfband_balanced",
+            8_000,
+            16_000,
+            Quality::Balanced,
+        ),
+        (
+            "16k_to_8k_halfband_balanced",
+            16_000,
+            8_000,
+            Quality::Balanced,
+        ),
+        ("44k1_to_48k", 44_100, 48_000, Quality::Balanced),
+        ("48k_to_44k1", 48_000, 44_100, Quality::Balanced),
     ];
     let backends = [("scalar", Backend::Scalar), ("auto", Backend::Auto)];
 
-    for (ratio_name, input_rate, output_rate) in ratios {
+    for (ratio_name, input_rate, output_rate, quality) in ratios {
         for channels in [1, 2] {
             let frames = input_rate as usize;
             let input_f32 = f32_input(frames, channels);
@@ -49,11 +77,12 @@ fn bench_resampler(c: &mut Criterion) {
                     &format!("f32/{ratio_name}/{channels}ch/{backend_name}"),
                     |b| {
                         b.iter(|| {
-                            let mut resampler = Resampler::<f32>::new(config(
+                            let mut resampler = Resampler::<f32>::new(config_with_quality(
                                 input_rate,
                                 output_rate,
                                 channels,
                                 backend,
+                                quality,
                             ))
                             .unwrap();
                             let mut output = Vec::new();
@@ -68,11 +97,12 @@ fn bench_resampler(c: &mut Criterion) {
                     &format!("i16/{ratio_name}/{channels}ch/{backend_name}"),
                     |b| {
                         b.iter(|| {
-                            let mut resampler = Resampler::<i16>::new(config(
+                            let mut resampler = Resampler::<i16>::new(config_with_quality(
                                 input_rate,
                                 output_rate,
                                 channels,
                                 backend,
+                                quality,
                             ))
                             .unwrap();
                             let mut output = Vec::new();
@@ -100,18 +130,35 @@ fn bench_resampler(c: &mut Criterion) {
         })
     });
 
-    for (ratio_name, input_rate, output_rate) in [
-        ("8k_to_16k_halfband", 8_000, 16_000),
-        ("16k_to_8k_halfband", 16_000, 8_000),
+    for (ratio_name, input_rate, output_rate, quality) in [
+        ("8k_to_16k_iir_fast", 8_000, 16_000, Quality::Fast),
+        ("16k_to_8k_iir_fast", 16_000, 8_000, Quality::Fast),
+        (
+            "8k_to_16k_halfband_balanced",
+            8_000,
+            16_000,
+            Quality::Balanced,
+        ),
+        (
+            "16k_to_8k_halfband_balanced",
+            16_000,
+            8_000,
+            Quality::Balanced,
+        ),
     ] {
         let input_f32 = f32_input(input_rate as usize, 2);
         c.bench_function(
             &format!("f32/{ratio_name}/2ch/auto/streaming_64_frames"),
             |b| {
                 b.iter(|| {
-                    let mut resampler =
-                        Resampler::<f32>::new(config(input_rate, output_rate, 2, Backend::Auto))
-                            .unwrap();
+                    let mut resampler = Resampler::<f32>::new(config_with_quality(
+                        input_rate,
+                        output_rate,
+                        2,
+                        Backend::Auto,
+                        quality,
+                    ))
+                    .unwrap();
                     let mut output = Vec::new();
                     for chunk in input_f32.chunks(64 * 2) {
                         resampler.process(chunk, &mut output).unwrap();
@@ -127,9 +174,14 @@ fn bench_resampler(c: &mut Criterion) {
             &format!("i16/{ratio_name}/2ch/auto/streaming_64_frames"),
             |b| {
                 b.iter(|| {
-                    let mut resampler =
-                        Resampler::<i16>::new(config(input_rate, output_rate, 2, Backend::Auto))
-                            .unwrap();
+                    let mut resampler = Resampler::<i16>::new(config_with_quality(
+                        input_rate,
+                        output_rate,
+                        2,
+                        Backend::Auto,
+                        quality,
+                    ))
+                    .unwrap();
                     let mut output = Vec::new();
                     for chunk in input_i16.chunks(64 * 2) {
                         resampler.process(chunk, &mut output).unwrap();

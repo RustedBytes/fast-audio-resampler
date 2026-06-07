@@ -3,8 +3,9 @@ use std::marker::PhantomData;
 use crate::backend::{self, SelectedBackend};
 use crate::error::frame_alignment_error;
 use crate::filter::FilterBank;
+use crate::iir::PolyphaseIir2x;
 use crate::ring::RingBuffer;
-use crate::{Error, ResamplerConfig, Result};
+use crate::{Error, Quality, ResamplerConfig, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpecialRatio {
@@ -195,6 +196,8 @@ struct CoreF32 {
     output_frames_emitted: i64,
     step: f64,
     special_ratio: SpecialRatio,
+    iir: Option<PolyphaseIir2x>,
+    iir_input_frames_consumed: i64,
     scratch: Vec<f32>,
     finished: bool,
 }
@@ -210,6 +213,8 @@ struct CoreI16 {
     output_frames_emitted: i64,
     step: f64,
     special_ratio: SpecialRatio,
+    iir: Option<PolyphaseIir2x>,
+    iir_input_frames_consumed: i64,
     scratch: Vec<i16>,
     finished: bool,
 }
@@ -220,6 +225,7 @@ struct CommonInit<T: Copy + Default> {
     channels: Vec<RingBuffer<T>>,
     step: f64,
     special_ratio: SpecialRatio,
+    iir: Option<PolyphaseIir2x>,
     taps: usize,
 }
 
@@ -236,6 +242,8 @@ impl CoreF32 {
             output_frames_emitted: 0,
             step: init.step,
             special_ratio: init.special_ratio,
+            iir: init.iir,
+            iir_input_frames_consumed: 0,
             scratch: vec![0.0; init.taps],
             finished: false,
         })
@@ -247,14 +255,23 @@ impl CoreF32 {
         }
         let input_frames = self.append_input(input)?;
         let before = output.len();
-        self.render_available(output, false);
-        self.discard_consumed();
+        if self.iir.is_some() {
+            self.render_iir_available(output, false);
+            self.discard_iir_consumed();
+        } else {
+            self.render_available(output, false);
+            self.discard_consumed();
+        }
         Ok(self.stats(input_frames, (output.len() - before) / self.config.channels))
     }
 
     fn finish(&mut self, output: &mut Vec<f32>) -> Result<ProcessStats> {
         let before = output.len();
-        self.render_available(output, true);
+        if self.iir.is_some() {
+            self.render_iir_available(output, true);
+        } else {
+            self.render_available(output, true);
+        }
         self.finished = true;
         Ok(self.stats(0, (output.len() - before) / self.config.channels))
     }
@@ -331,6 +348,58 @@ impl CoreF32 {
         }
     }
 
+    fn render_iir_available(&mut self, output: &mut Vec<f32>, flush: bool) {
+        if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_up) {
+            let ready = self
+                .total_input_frames
+                .saturating_sub(self.iir_input_frames_consumed)
+                .max(0) as usize;
+            output.reserve(ready * 2 * self.config.channels);
+            while self.iir_input_frames_consumed < self.total_input_frames {
+                let frame = self.iir_input_frames_consumed;
+                for channel in 0..self.config.channels {
+                    let sample = self.sample_at(channel, frame);
+                    let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                    output.extend_from_slice(&pair);
+                }
+                self.iir_input_frames_consumed += 1;
+                self.output_frames_emitted += 2;
+            }
+            return;
+        }
+
+        let complete_pairs = (self.total_input_frames - self.iir_input_frames_consumed) / 2;
+        let flush_tail =
+            usize::from(flush && self.iir_input_frames_consumed < self.total_input_frames);
+        output.reserve((complete_pairs as usize + flush_tail) * self.config.channels);
+        while self.iir_input_frames_consumed + 1 < self.total_input_frames {
+            self.render_iir_down_pair(
+                output,
+                self.iir_input_frames_consumed,
+                self.iir_input_frames_consumed + 1,
+            );
+            self.iir_input_frames_consumed += 2;
+            self.output_frames_emitted += 1;
+        }
+        if flush && self.iir_input_frames_consumed < self.total_input_frames {
+            self.render_iir_down_pair(output, self.iir_input_frames_consumed, -1);
+            self.iir_input_frames_consumed += 1;
+            self.output_frames_emitted += 1;
+        }
+    }
+
+    fn render_iir_down_pair(&mut self, output: &mut Vec<f32>, even_frame: i64, odd_frame: i64) {
+        for channel in 0..self.config.channels {
+            let even = self.sample_at(channel, even_frame);
+            let odd = if odd_frame >= 0 {
+                self.sample_at(channel, odd_frame)
+            } else {
+                0.0
+            };
+            output.push(self.iir.as_mut().unwrap().process_down(channel, even, odd));
+        }
+    }
+
     fn render_up2_frame_into(&self, output: &mut Vec<f32>) {
         let source_frame = self.output_frames_emitted / 2;
         let half_band = self.filter.half_band();
@@ -373,6 +442,16 @@ impl CoreF32 {
 
     fn discard_consumed(&mut self) {
         let keep_from = (self.next_source_pos as i64 - self.filter.half_taps() as i64 - 2)
+            .max(self.channels[0].start_frame());
+        for channel in &mut self.channels {
+            channel.discard_before(keep_from);
+        }
+    }
+
+    fn discard_iir_consumed(&mut self) {
+        let keep_from = self
+            .iir_input_frames_consumed
+            .saturating_sub(2)
             .max(self.channels[0].start_frame());
         for channel in &mut self.channels {
             channel.discard_before(keep_from);
@@ -458,6 +537,8 @@ impl CoreI16 {
             output_frames_emitted: 0,
             step: init.step,
             special_ratio: init.special_ratio,
+            iir: init.iir,
+            iir_input_frames_consumed: 0,
             scratch: vec![0; init.taps],
             finished: false,
         })
@@ -469,14 +550,23 @@ impl CoreI16 {
         }
         let input_frames = self.append_input(input)?;
         let before = output.len();
-        self.render_available(output, false);
-        self.discard_consumed();
+        if self.iir.is_some() {
+            self.render_iir_available(output, false);
+            self.discard_iir_consumed();
+        } else {
+            self.render_available(output, false);
+            self.discard_consumed();
+        }
         Ok(self.stats(input_frames, (output.len() - before) / self.config.channels))
     }
 
     fn finish(&mut self, output: &mut Vec<i16>) -> Result<ProcessStats> {
         let before = output.len();
-        self.render_available(output, true);
+        if self.iir.is_some() {
+            self.render_iir_available(output, true);
+        } else {
+            self.render_available(output, true);
+        }
         self.finished = true;
         Ok(self.stats(0, (output.len() - before) / self.config.channels))
     }
@@ -553,6 +643,60 @@ impl CoreI16 {
         }
     }
 
+    fn render_iir_available(&mut self, output: &mut Vec<i16>, flush: bool) {
+        if self.iir.as_ref().is_some_and(PolyphaseIir2x::is_up) {
+            let ready = self
+                .total_input_frames
+                .saturating_sub(self.iir_input_frames_consumed)
+                .max(0) as usize;
+            output.reserve(ready * 2 * self.config.channels);
+            while self.iir_input_frames_consumed < self.total_input_frames {
+                let frame = self.iir_input_frames_consumed;
+                for channel in 0..self.config.channels {
+                    let sample = self.sample_at(channel, frame) as f32;
+                    let pair = self.iir.as_mut().unwrap().process_up(channel, sample);
+                    output.push(f32_to_i16(pair[0]));
+                    output.push(f32_to_i16(pair[1]));
+                }
+                self.iir_input_frames_consumed += 1;
+                self.output_frames_emitted += 2;
+            }
+            return;
+        }
+
+        let complete_pairs = (self.total_input_frames - self.iir_input_frames_consumed) / 2;
+        let flush_tail =
+            usize::from(flush && self.iir_input_frames_consumed < self.total_input_frames);
+        output.reserve((complete_pairs as usize + flush_tail) * self.config.channels);
+        while self.iir_input_frames_consumed + 1 < self.total_input_frames {
+            self.render_iir_down_pair(
+                output,
+                self.iir_input_frames_consumed,
+                self.iir_input_frames_consumed + 1,
+            );
+            self.iir_input_frames_consumed += 2;
+            self.output_frames_emitted += 1;
+        }
+        if flush && self.iir_input_frames_consumed < self.total_input_frames {
+            self.render_iir_down_pair(output, self.iir_input_frames_consumed, -1);
+            self.iir_input_frames_consumed += 1;
+            self.output_frames_emitted += 1;
+        }
+    }
+
+    fn render_iir_down_pair(&mut self, output: &mut Vec<i16>, even_frame: i64, odd_frame: i64) {
+        for channel in 0..self.config.channels {
+            let even = self.sample_at(channel, even_frame) as f32;
+            let odd = if odd_frame >= 0 {
+                self.sample_at(channel, odd_frame) as f32
+            } else {
+                0.0
+            };
+            let sample = self.iir.as_mut().unwrap().process_down(channel, even, odd);
+            output.push(f32_to_i16(sample));
+        }
+    }
+
     fn render_up2_frame_into(&self, output: &mut Vec<i16>) {
         let source_frame = self.output_frames_emitted / 2;
         let half_band = self.filter.half_band();
@@ -596,6 +740,16 @@ impl CoreI16 {
 
     fn discard_consumed(&mut self) {
         let keep_from = (self.next_source_pos as i64 - self.filter.half_taps() as i64 - 2)
+            .max(self.channels[0].start_frame());
+        for channel in &mut self.channels {
+            channel.discard_before(keep_from);
+        }
+    }
+
+    fn discard_iir_consumed(&mut self) {
+        let keep_from = self
+            .iir_input_frames_consumed
+            .saturating_sub(2)
             .max(self.channels[0].start_frame());
         for channel in &mut self.channels {
             channel.discard_before(keep_from);
@@ -689,12 +843,18 @@ fn init_common<T: Copy + Default>(config: ResamplerConfig) -> Result<CommonInit<
         (16_000, 8_000) => SpecialRatio::Down2,
         _ => SpecialRatio::General,
     };
+    let iir = match (config.quality, special_ratio) {
+        (Quality::Fast, SpecialRatio::Up2) => Some(PolyphaseIir2x::up(config.channels)),
+        (Quality::Fast, SpecialRatio::Down2) => Some(PolyphaseIir2x::down(config.channels)),
+        _ => None,
+    };
     Ok(CommonInit {
         backend,
         filter,
         channels,
         step,
         special_ratio,
+        iir,
         taps,
     })
 }
@@ -793,17 +953,31 @@ fn q15_acc_to_i16(acc: i64) -> i16 {
     rounded.clamp(i16::MIN as i64, i16::MAX as i64) as i16
 }
 
+#[inline(always)]
+fn f32_to_i16(sample: f32) -> i16 {
+    sample.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Backend, Error, Quality};
 
     fn cfg(input_rate: u32, output_rate: u32, channels: usize) -> ResamplerConfig {
+        cfg_with_quality(input_rate, output_rate, channels, Quality::Fast)
+    }
+
+    fn cfg_with_quality(
+        input_rate: u32,
+        output_rate: u32,
+        channels: usize,
+        quality: Quality,
+    ) -> ResamplerConfig {
         ResamplerConfig {
             input_rate,
             output_rate,
             channels,
-            quality: Quality::Fast,
+            quality,
             backend: Backend::Scalar,
             max_input_frames_per_chunk: None,
         }
@@ -894,12 +1068,24 @@ mod tests {
                     [s, -s]
                 })
                 .collect();
-            let mut one = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut one = Resampler::<f32>::new(cfg_with_quality(
+                input_rate,
+                output_rate,
+                2,
+                Quality::Balanced,
+            ))
+            .unwrap();
             let mut one_out = Vec::new();
             one.process(&input, &mut one_out).unwrap();
             one.finish(&mut one_out).unwrap();
 
-            let mut chunked = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut chunked = Resampler::<f32>::new(cfg_with_quality(
+                input_rate,
+                output_rate,
+                2,
+                Quality::Balanced,
+            ))
+            .unwrap();
             let mut chunked_out = Vec::new();
             for chunk in input.chunks(14) {
                 chunked.process(chunk, &mut chunked_out).unwrap();
@@ -920,7 +1106,8 @@ mod tests {
     #[test]
     fn f32_half_band_up2_preserves_original_samples_on_even_outputs() {
         let input: Vec<f32> = (0..128).map(|i| ((i as f32) * 0.13).sin()).collect();
-        let mut resampler = Resampler::<f32>::new(cfg(8_000, 16_000, 1)).unwrap();
+        let mut resampler =
+            Resampler::<f32>::new(cfg_with_quality(8_000, 16_000, 1, Quality::Balanced)).unwrap();
         let mut output = Vec::new();
         resampler.process(&input, &mut output).unwrap();
         resampler.finish(&mut output).unwrap();
@@ -933,12 +1120,14 @@ mod tests {
     #[test]
     fn f32_half_band_roundtrip_preserves_low_frequency_shape() {
         let input: Vec<f32> = (0..320).map(|i| ((i as f32) * 0.08).sin() * 0.5).collect();
-        let mut up = Resampler::<f32>::new(cfg(8_000, 16_000, 1)).unwrap();
+        let mut up =
+            Resampler::<f32>::new(cfg_with_quality(8_000, 16_000, 1, Quality::Balanced)).unwrap();
         let mut up_out = Vec::new();
         up.process(&input, &mut up_out).unwrap();
         up.finish(&mut up_out).unwrap();
 
-        let mut down = Resampler::<f32>::new(cfg(16_000, 8_000, 1)).unwrap();
+        let mut down =
+            Resampler::<f32>::new(cfg_with_quality(16_000, 8_000, 1, Quality::Balanced)).unwrap();
         let mut down_out = Vec::new();
         down.process(&up_out, &mut down_out).unwrap();
         down.finish(&mut down_out).unwrap();
@@ -950,6 +1139,30 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .sum::<f32>()
             / input.len() as f32;
+        assert!(mean_abs_error < 0.02, "mean abs error {mean_abs_error}");
+    }
+
+    #[test]
+    fn f32_polyphase_iir_roundtrip_preserves_low_frequency_shape_after_latency() {
+        let input: Vec<f32> = (0..320).map(|i| ((i as f32) * 0.08).sin() * 0.5).collect();
+        let mut up = Resampler::<f32>::new(cfg(8_000, 16_000, 1)).unwrap();
+        let mut up_out = Vec::new();
+        up.process(&input, &mut up_out).unwrap();
+        up.finish(&mut up_out).unwrap();
+
+        let mut down = Resampler::<f32>::new(cfg(16_000, 8_000, 1)).unwrap();
+        let mut down_out = Vec::new();
+        down.process(&up_out, &mut down_out).unwrap();
+        down.finish(&mut down_out).unwrap();
+
+        assert_eq!(input.len(), down_out.len());
+        let delay = 2;
+        let mean_abs_error = input[..input.len() - delay]
+            .iter()
+            .zip(down_out[delay..].iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>()
+            / (input.len() - delay) as f32;
         assert!(mean_abs_error < 0.02, "mean abs error {mean_abs_error}");
     }
 

@@ -10,6 +10,7 @@ mod backend;
 mod config;
 mod error;
 mod filter;
+mod iir;
 mod resampler;
 mod ring;
 
