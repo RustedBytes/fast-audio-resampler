@@ -255,7 +255,7 @@ mod aarch64 {
         let signal = unsafe { vld1_f32(signal.as_ptr()) };
         let next_state = unsafe { vld1_f32(next_state.as_ptr()) };
         let state = unsafe { vld1_f32(state.as_ptr()) };
-        let out = vmla_f32(state, vsub_f32(signal, next_state), vdup_n_f32(coeff));
+        let out = unsafe { vmla_f32(state, vsub_f32(signal, next_state), vdup_n_f32(coeff)) };
         let mut lanes = [0.0f32; 2];
         unsafe { vst1_f32(lanes.as_mut_ptr(), out) };
         lanes
