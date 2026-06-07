@@ -31,8 +31,8 @@ fn i16_input(frames: usize, channels: usize) -> Vec<i16> {
 
 fn bench_resampler(c: &mut Criterion) {
     let ratios = [
-        ("8k_to_16k", 8_000, 16_000),
-        ("16k_to_8k", 16_000, 8_000),
+        ("8k_to_16k_halfband", 8_000, 16_000),
+        ("16k_to_8k_halfband", 16_000, 8_000),
         ("44k1_to_48k", 44_100, 48_000),
         ("48k_to_44k1", 48_000, 44_100),
     ];
@@ -99,6 +99,47 @@ fn bench_resampler(c: &mut Criterion) {
             output
         })
     });
+
+    for (ratio_name, input_rate, output_rate) in [
+        ("8k_to_16k_halfband", 8_000, 16_000),
+        ("16k_to_8k_halfband", 16_000, 8_000),
+    ] {
+        let input_f32 = f32_input(input_rate as usize, 2);
+        c.bench_function(
+            &format!("f32/{ratio_name}/2ch/auto/streaming_64_frames"),
+            |b| {
+                b.iter(|| {
+                    let mut resampler =
+                        Resampler::<f32>::new(config(input_rate, output_rate, 2, Backend::Auto))
+                            .unwrap();
+                    let mut output = Vec::new();
+                    for chunk in input_f32.chunks(64 * 2) {
+                        resampler.process(chunk, &mut output).unwrap();
+                    }
+                    resampler.finish(&mut output).unwrap();
+                    output
+                })
+            },
+        );
+
+        let input_i16 = i16_input(input_rate as usize, 2);
+        c.bench_function(
+            &format!("i16/{ratio_name}/2ch/auto/streaming_64_frames"),
+            |b| {
+                b.iter(|| {
+                    let mut resampler =
+                        Resampler::<i16>::new(config(input_rate, output_rate, 2, Backend::Auto))
+                            .unwrap();
+                    let mut output = Vec::new();
+                    for chunk in input_i16.chunks(64 * 2) {
+                        resampler.process(chunk, &mut output).unwrap();
+                    }
+                    resampler.finish(&mut output).unwrap();
+                    output
+                })
+            },
+        );
+    }
 }
 
 criterion_group!(benches, bench_resampler);

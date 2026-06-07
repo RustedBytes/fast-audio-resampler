@@ -9,10 +9,35 @@ pub(crate) struct FilterBank {
     phases: usize,
     coeffs: AlignedVec<f32, 64>,
     coeffs_q15: AlignedVec<i16, 64>,
+    half_band: Option<HalfBandFilter>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HalfBandFilter {
+    half_taps: usize,
+    side_offsets: Vec<i64>,
+    side_input_offsets_for_up: Vec<i64>,
+    side_coeffs: AlignedVec<f32, 64>,
+    side_coeffs_up: AlignedVec<f32, 64>,
+    side_coeffs_q15: AlignedVec<i16, 64>,
+    side_coeffs_up_q15: AlignedVec<i16, 64>,
+    center_coeff: f32,
+    center_coeff_q15: i16,
 }
 
 impl FilterBank {
     pub(crate) fn new(input_rate: u32, output_rate: u32, quality: Quality) -> Self {
+        if matches!((input_rate, output_rate), (8_000, 16_000) | (16_000, 8_000)) {
+            let half_band = HalfBandFilter::new(quality);
+            return Self {
+                taps: half_band.taps(),
+                phases: quality.phases(),
+                coeffs: AlignedVec::from_slice(&[]),
+                coeffs_q15: AlignedVec::from_slice(&[]),
+                half_band: Some(half_band),
+            };
+        }
+
         let taps = quality.taps();
         let phases = quality.phases();
         let cutoff = if output_rate < input_rate {
@@ -69,6 +94,7 @@ impl FilterBank {
             phases,
             coeffs: AlignedVec::from_slice(&coeffs),
             coeffs_q15: AlignedVec::from_slice(&coeffs_q15),
+            half_band: None,
         }
     }
 
@@ -97,6 +123,124 @@ impl FilterBank {
     pub(crate) fn phase_count(&self) -> usize {
         self.phases
     }
+
+    #[inline(always)]
+    pub(crate) fn half_band(&self) -> &HalfBandFilter {
+        self.half_band
+            .as_ref()
+            .expect("half-band filter is only available for exact 8 kHz <-> 16 kHz ratios")
+    }
+}
+
+impl HalfBandFilter {
+    fn new(quality: Quality) -> Self {
+        let half_taps = quality.taps() / 2;
+        let taps = half_taps * 2 + 1;
+        let center = half_taps as i64;
+        let beta = match quality {
+            Quality::Fast => 5.0,
+            Quality::Balanced => 7.5,
+            Quality::Best => 10.0,
+        };
+        let denom = modified_bessel0(beta);
+        let mut coeffs = vec![0.0f64; taps];
+
+        for (tap, coeff) in coeffs.iter_mut().enumerate() {
+            let offset = tap as i64 - center;
+            if offset == 0 {
+                *coeff = 0.5;
+            } else if offset & 1 != 0 {
+                let x = offset as f64;
+                let sinc = (0.5 * PI * x).sin() / (PI * x);
+                let window_pos = (2.0 * tap as f64) / (taps as f64 - 1.0) - 1.0;
+                let window =
+                    modified_bessel0(beta * (1.0 - window_pos * window_pos).sqrt()) / denom;
+                *coeff = sinc * window;
+            }
+        }
+
+        let sum = coeffs.iter().sum::<f64>();
+        if sum != 0.0 {
+            for coeff in &mut coeffs {
+                *coeff /= sum;
+            }
+        }
+
+        let mut side_offsets = Vec::new();
+        let mut side_input_offsets_for_up = Vec::new();
+        let mut side_coeffs = Vec::new();
+        for (tap, &coeff) in coeffs.iter().enumerate() {
+            let offset = tap as i64 - center;
+            if offset != 0 && offset & 1 != 0 {
+                side_offsets.push(offset);
+                side_input_offsets_for_up.push((1 - offset) / 2);
+                side_coeffs.push(coeff as f32);
+            }
+        }
+
+        let side_coeffs_up: Vec<f32> = side_coeffs.iter().map(|&coeff| coeff * 2.0).collect();
+        let side_coeffs_q15: Vec<i16> = side_coeffs.iter().map(|&coeff| q15(coeff)).collect();
+        let side_coeffs_up_q15: Vec<i16> = side_coeffs_up.iter().map(|&coeff| q15(coeff)).collect();
+        let center_coeff = coeffs[half_taps] as f32;
+        let center_coeff_q15 = q15(center_coeff);
+
+        Self {
+            half_taps,
+            side_offsets,
+            side_input_offsets_for_up,
+            side_coeffs: AlignedVec::from_slice(&side_coeffs),
+            side_coeffs_up: AlignedVec::from_slice(&side_coeffs_up),
+            side_coeffs_q15: AlignedVec::from_slice(&side_coeffs_q15),
+            side_coeffs_up_q15: AlignedVec::from_slice(&side_coeffs_up_q15),
+            center_coeff,
+            center_coeff_q15,
+        }
+    }
+
+    #[inline(always)]
+    fn taps(&self) -> usize {
+        self.half_taps * 2 + 1
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_offsets(&self) -> &[i64] {
+        &self.side_offsets
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_input_offsets_for_up(&self) -> &[i64] {
+        &self.side_input_offsets_for_up
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_coeffs(&self) -> &[f32] {
+        &self.side_coeffs
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_coeffs_up(&self) -> &[f32] {
+        &self.side_coeffs_up
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_coeffs_q15(&self) -> &[i16] {
+        &self.side_coeffs_q15
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_coeffs_up_q15(&self) -> &[i16] {
+        &self.side_coeffs_up_q15
+    }
+
+    #[inline(always)]
+    pub(crate) fn center_coeff(&self) -> f32 {
+        self.center_coeff
+    }
+
+    #[inline(always)]
+    pub(crate) fn center_coeff_q15(&self) -> i16 {
+        self.center_coeff_q15
+    }
 }
 
 fn modified_bessel0(x: f64) -> f64 {
@@ -114,6 +258,13 @@ fn modified_bessel0(x: f64) -> f64 {
     sum
 }
 
+fn q15(coeff: f32) -> i16 {
+    let scaled = (coeff * 32767.0)
+        .round()
+        .clamp(i16::MIN as f32, i16::MAX as f32);
+    scaled as i16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +278,15 @@ mod tests {
         assert_eq!(coeffs.len(), 48);
         let sum = coeffs.iter().sum::<f32>();
         assert!((sum - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn creates_compact_half_band_for_exact_8k_16k_ratios() {
+        let bank = FilterBank::new(8_000, 16_000, Quality::Fast);
+        let half_band = bank.half_band();
+        assert_eq!(bank.taps(), Quality::Fast.taps() + 1);
+        assert_eq!(bank.half_taps(), Quality::Fast.taps() / 2);
+        assert_eq!(half_band.side_offsets().len(), Quality::Fast.taps() / 2);
+        assert!((half_band.center_coeff() - 0.5).abs() < 0.01);
     }
 }

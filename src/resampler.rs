@@ -302,6 +302,18 @@ impl CoreF32 {
     }
 
     fn render_frame_into(&mut self, output: &mut Vec<f32>) {
+        match self.special_ratio {
+            SpecialRatio::Up2 => {
+                self.render_up2_frame_into(output);
+                return;
+            }
+            SpecialRatio::Down2 => {
+                self.render_down2_frame_into(output);
+                return;
+            }
+            SpecialRatio::General => {}
+        }
+
         let center = self.next_source_pos as i64;
         let phase = self.phase_index(center);
         let coeffs = self.filter.coeffs_for_phase(phase);
@@ -316,6 +328,41 @@ impl CoreF32 {
                 &self.scratch[..taps],
                 coeffs,
             ));
+        }
+    }
+
+    fn render_up2_frame_into(&self, output: &mut Vec<f32>) {
+        let source_frame = self.output_frames_emitted / 2;
+        let half_band = self.filter.half_band();
+        if self.output_frames_emitted & 1 == 0 {
+            for channel in 0..self.config.channels {
+                output.push(self.sample_at(channel, source_frame));
+            }
+            return;
+        }
+
+        let offsets = half_band.side_input_offsets_for_up();
+        let coeffs = half_band.side_coeffs_up();
+        for channel in 0..self.config.channels {
+            let mut acc = 0.0f32;
+            for i in 0..coeffs.len() {
+                acc += self.sample_at(channel, source_frame + offsets[i]) * coeffs[i];
+            }
+            output.push(acc);
+        }
+    }
+
+    fn render_down2_frame_into(&self, output: &mut Vec<f32>) {
+        let center = self.output_frames_emitted * 2;
+        let half_band = self.filter.half_band();
+        let offsets = half_band.side_offsets();
+        let coeffs = half_band.side_coeffs();
+        for channel in 0..self.config.channels {
+            let mut acc = self.sample_at(channel, center) * half_band.center_coeff();
+            for i in 0..coeffs.len() {
+                acc += self.sample_at(channel, center - offsets[i]) * coeffs[i];
+            }
+            output.push(acc);
         }
     }
 
@@ -477,6 +524,18 @@ impl CoreI16 {
     }
 
     fn render_frame_into(&mut self, output: &mut Vec<i16>) {
+        match self.special_ratio {
+            SpecialRatio::Up2 => {
+                self.render_up2_frame_into(output);
+                return;
+            }
+            SpecialRatio::Down2 => {
+                self.render_down2_frame_into(output);
+                return;
+            }
+            SpecialRatio::General => {}
+        }
+
         let center = self.next_source_pos as i64;
         let phase = self.phase_index(center);
         let coeffs = self.filter.coeffs_q15_for_phase(phase);
@@ -491,6 +550,42 @@ impl CoreI16 {
                 &self.scratch[..taps],
                 coeffs,
             ));
+        }
+    }
+
+    fn render_up2_frame_into(&self, output: &mut Vec<i16>) {
+        let source_frame = self.output_frames_emitted / 2;
+        let half_band = self.filter.half_band();
+        if self.output_frames_emitted & 1 == 0 {
+            for channel in 0..self.config.channels {
+                output.push(self.sample_at(channel, source_frame));
+            }
+            return;
+        }
+
+        let offsets = half_band.side_input_offsets_for_up();
+        let coeffs = half_band.side_coeffs_up_q15();
+        for channel in 0..self.config.channels {
+            let mut acc = 0i64;
+            for i in 0..coeffs.len() {
+                acc += self.sample_at(channel, source_frame + offsets[i]) as i64 * coeffs[i] as i64;
+            }
+            output.push(q15_acc_to_i16(acc));
+        }
+    }
+
+    fn render_down2_frame_into(&self, output: &mut Vec<i16>) {
+        let center = self.output_frames_emitted * 2;
+        let half_band = self.filter.half_band();
+        let offsets = half_band.side_offsets();
+        let coeffs = half_band.side_coeffs_q15();
+        for channel in 0..self.config.channels {
+            let mut acc =
+                self.sample_at(channel, center) as i64 * half_band.center_coeff_q15() as i64;
+            for i in 0..coeffs.len() {
+                acc += self.sample_at(channel, center - offsets[i]) as i64 * coeffs[i] as i64;
+            }
+            output.push(q15_acc_to_i16(acc));
         }
     }
 
@@ -692,6 +787,12 @@ fn required_output_capacity(
     frames.saturating_mul(channels)
 }
 
+#[inline(always)]
+fn q15_acc_to_i16(acc: i64) -> i16 {
+    let rounded = (acc + (1 << 14)) >> 15;
+    rounded.clamp(i16::MIN as i64, i16::MAX as i64) as i16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,6 +886,74 @@ mod tests {
     }
 
     #[test]
+    fn f32_half_band_special_ratios_match_chunked_and_one_shot() {
+        for (input_rate, output_rate, frames) in [(8_000, 16_000, 320), (16_000, 8_000, 640)] {
+            let input: Vec<f32> = (0..frames)
+                .flat_map(|i| {
+                    let s = ((i as f32) * 0.047).sin() * 0.5;
+                    [s, -s]
+                })
+                .collect();
+            let mut one = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut one_out = Vec::new();
+            one.process(&input, &mut one_out).unwrap();
+            one.finish(&mut one_out).unwrap();
+
+            let mut chunked = Resampler::<f32>::new(cfg(input_rate, output_rate, 2)).unwrap();
+            let mut chunked_out = Vec::new();
+            for chunk in input.chunks(14) {
+                chunked.process(chunk, &mut chunked_out).unwrap();
+            }
+            chunked.finish(&mut chunked_out).unwrap();
+
+            assert_eq!(
+                one_out.len(),
+                expected_output_frames(frames, input_rate, output_rate) as usize * 2
+            );
+            assert_eq!(one_out.len(), chunked_out.len());
+            for (a, b) in one_out.iter().zip(chunked_out.iter()) {
+                assert!((a - b).abs() < 1.0e-6, "{a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn f32_half_band_up2_preserves_original_samples_on_even_outputs() {
+        let input: Vec<f32> = (0..128).map(|i| ((i as f32) * 0.13).sin()).collect();
+        let mut resampler = Resampler::<f32>::new(cfg(8_000, 16_000, 1)).unwrap();
+        let mut output = Vec::new();
+        resampler.process(&input, &mut output).unwrap();
+        resampler.finish(&mut output).unwrap();
+
+        for (source, rendered) in input.iter().zip(output.iter().step_by(2)) {
+            assert!((source - rendered).abs() < 1.0e-6, "{source} != {rendered}");
+        }
+    }
+
+    #[test]
+    fn f32_half_band_roundtrip_preserves_low_frequency_shape() {
+        let input: Vec<f32> = (0..320).map(|i| ((i as f32) * 0.08).sin() * 0.5).collect();
+        let mut up = Resampler::<f32>::new(cfg(8_000, 16_000, 1)).unwrap();
+        let mut up_out = Vec::new();
+        up.process(&input, &mut up_out).unwrap();
+        up.finish(&mut up_out).unwrap();
+
+        let mut down = Resampler::<f32>::new(cfg(16_000, 8_000, 1)).unwrap();
+        let mut down_out = Vec::new();
+        down.process(&up_out, &mut down_out).unwrap();
+        down.finish(&mut down_out).unwrap();
+
+        assert_eq!(input.len(), down_out.len());
+        let mean_abs_error = input
+            .iter()
+            .zip(down_out.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>()
+            / input.len() as f32;
+        assert!(mean_abs_error < 0.02, "mean abs error {mean_abs_error}");
+    }
+
+    #[test]
     fn special_ratio_chunked_paths_match_one_shot_for_i16_stereo() {
         let input: Vec<i16> = (0..160)
             .flat_map(|i| {
@@ -808,6 +977,29 @@ mod tests {
     }
 
     #[test]
+    fn i16_half_band_down2_chunked_matches_one_shot() {
+        let input: Vec<i16> = (0..640)
+            .flat_map(|i| {
+                let s = (((i as f32) * 0.041).sin() * 12_000.0) as i16;
+                [s, -s]
+            })
+            .collect();
+        let mut one = Resampler::<i16>::new(cfg(16_000, 8_000, 2)).unwrap();
+        let mut one_out = Vec::new();
+        one.process(&input, &mut one_out).unwrap();
+        one.finish(&mut one_out).unwrap();
+        assert_eq!(one_out.len(), 640);
+
+        let mut chunked = Resampler::<i16>::new(cfg(16_000, 8_000, 2)).unwrap();
+        let mut chunked_out = Vec::new();
+        for chunk in input.chunks(22) {
+            chunked.process(chunk, &mut chunked_out).unwrap();
+        }
+        chunked.finish(&mut chunked_out).unwrap();
+        assert_eq!(one_out, chunked_out);
+    }
+
+    #[test]
     fn downsampling_filters_instead_of_dropping_every_other_sample() {
         let input: Vec<f32> = (0..320)
             .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
@@ -819,6 +1011,46 @@ mod tests {
         assert_eq!(output.len(), 160);
         assert!(
             output.iter().any(|&sample| sample < 0.5),
+            "output looks like naive even-sample decimation"
+        );
+    }
+
+    #[test]
+    fn half_band_special_ratios_keep_silence_silent_and_impulses_bounded() {
+        for (input_rate, output_rate, frames) in [(8_000, 16_000, 160), (16_000, 8_000, 320)] {
+            let mut silence = Resampler::<i16>::new(cfg(input_rate, output_rate, 1)).unwrap();
+            let mut silence_out = Vec::new();
+            silence.process(&vec![0; frames], &mut silence_out).unwrap();
+            silence.finish(&mut silence_out).unwrap();
+            assert!(silence_out.iter().all(|&sample| sample == 0));
+
+            let mut impulse_input = vec![0i16; frames];
+            impulse_input[frames / 2] = 24_000;
+            let mut impulse = Resampler::<i16>::new(cfg(input_rate, output_rate, 1)).unwrap();
+            let mut impulse_out = Vec::new();
+            impulse.process(&impulse_input, &mut impulse_out).unwrap();
+            impulse.finish(&mut impulse_out).unwrap();
+            assert!(impulse_out.iter().any(|&sample| sample != 0));
+            assert!(
+                impulse_out
+                    .iter()
+                    .all(|&sample| (sample as i32).abs() <= 24_000)
+            );
+        }
+    }
+
+    #[test]
+    fn i16_half_band_downsampling_filters_instead_of_decimating() {
+        let input: Vec<i16> = (0..320)
+            .map(|i| if i % 2 == 0 { 16_000 } else { -16_000 })
+            .collect();
+        let mut resampler = Resampler::<i16>::new(cfg(16_000, 8_000, 1)).unwrap();
+        let mut output = Vec::new();
+        resampler.process(&input, &mut output).unwrap();
+        resampler.finish(&mut output).unwrap();
+        assert_eq!(output.len(), 160);
+        assert!(
+            output.iter().any(|&sample| sample < 8_000),
             "output looks like naive even-sample decimation"
         );
     }
