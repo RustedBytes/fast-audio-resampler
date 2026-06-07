@@ -1,3 +1,5 @@
+use crate::iir_backend::{self, SelectedIirBackend};
+
 const FAST_IIR_COEFFS: [f32; 6] = [
     0.086928910174,
     0.295058247590,
@@ -17,6 +19,7 @@ pub(crate) enum PolyphaseIir2x {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Iir2xFilter {
+    backend: SelectedIirBackend,
     coeffs: Vec<[f32; 2]>,
     states: Vec<[f32; 2]>,
     last_state: [f32; 2],
@@ -24,6 +27,7 @@ pub(crate) struct Iir2xFilter {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Iir2xStereoFilter {
+    backend: SelectedIirBackend,
     coeffs: Vec<[f32; 2]>,
     states: Vec<[[f32; 2]; 2]>,
     last_state: [[f32; 2]; 2],
@@ -129,6 +133,7 @@ impl Iir2xFilter {
             .collect();
         let states = vec![[0.0; 2]; coeffs.len()];
         Self {
+            backend: SelectedIirBackend::auto_select(),
             coeffs,
             states,
             last_state: [0.0; 2],
@@ -142,18 +147,24 @@ impl Iir2xFilter {
 
         for i in 0..last {
             let next_state = self.states[i + 1];
-            let tmp = [
-                (signal[0] - next_state[0]) * self.coeffs[i][0] + self.states[i][0],
-                (signal[1] - next_state[1]) * self.coeffs[i][1] + self.states[i][1],
-            ];
+            let tmp = iir_backend::allpass_pair(
+                self.backend,
+                signal,
+                next_state,
+                self.coeffs[i],
+                self.states[i],
+            );
             self.states[i] = signal;
             signal = tmp;
         }
 
-        let tmp = [
-            (signal[0] - self.last_state[0]) * self.coeffs[last][0] + self.states[last][0],
-            (signal[1] - self.last_state[1]) * self.coeffs[last][1] + self.states[last][1],
-        ];
+        let tmp = iir_backend::allpass_pair(
+            self.backend,
+            signal,
+            self.last_state,
+            self.coeffs[last],
+            self.states[last],
+        );
         self.states[last] = signal;
         self.last_state = tmp;
         tmp
@@ -173,6 +184,7 @@ impl Iir2xStereoFilter {
             .collect();
         let states = vec![[[0.0; 2]; 2]; coeffs.len()];
         Self {
+            backend: SelectedIirBackend::auto_select(),
             coeffs,
             states,
             last_state: [[0.0; 2]; 2],
@@ -186,66 +198,28 @@ impl Iir2xStereoFilter {
 
         for i in 0..last {
             let next_state = self.states[i + 1];
-            let tmp = [
-                stereo_add(
-                    stereo_mul(
-                        stereo_sub(signal[0], next_state[0]),
-                        splat(self.coeffs[i][0]),
-                    ),
-                    self.states[i][0],
-                ),
-                stereo_add(
-                    stereo_mul(
-                        stereo_sub(signal[1], next_state[1]),
-                        splat(self.coeffs[i][1]),
-                    ),
-                    self.states[i][1],
-                ),
-            ];
+            let tmp = iir_backend::allpass_pair_stereo(
+                self.backend,
+                signal,
+                next_state,
+                self.coeffs[i],
+                self.states[i],
+            );
             self.states[i] = signal;
             signal = tmp;
         }
 
-        let tmp = [
-            stereo_add(
-                stereo_mul(
-                    stereo_sub(signal[0], self.last_state[0]),
-                    splat(self.coeffs[last][0]),
-                ),
-                self.states[last][0],
-            ),
-            stereo_add(
-                stereo_mul(
-                    stereo_sub(signal[1], self.last_state[1]),
-                    splat(self.coeffs[last][1]),
-                ),
-                self.states[last][1],
-            ),
-        ];
+        let tmp = iir_backend::allpass_pair_stereo(
+            self.backend,
+            signal,
+            self.last_state,
+            self.coeffs[last],
+            self.states[last],
+        );
         self.states[last] = signal;
         self.last_state = tmp;
         tmp
     }
-}
-
-#[inline(always)]
-fn splat(value: f32) -> [f32; 2] {
-    [value, value]
-}
-
-#[inline(always)]
-fn stereo_add(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [a[0] + b[0], a[1] + b[1]]
-}
-
-#[inline(always)]
-fn stereo_sub(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-#[inline(always)]
-fn stereo_mul(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [a[0] * b[0], a[1] * b[1]]
 }
 
 #[cfg(test)]

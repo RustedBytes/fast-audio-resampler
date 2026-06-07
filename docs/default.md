@@ -7,14 +7,14 @@ For WebSocket or long-lived server sessions, see `docs/streaming.md`.
 ## Basic `f32` Resampling
 
 ```rust
-use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 
 let config = ResamplerConfig {
     input_rate: 44_100,
     output_rate: 48_000,
     channels: 2,
     quality: Quality::Balanced,
-    backend: Backend::Auto,
+    backend: FirBackend::Auto,
     max_input_frames_per_chunk: None,
 };
 
@@ -37,14 +37,14 @@ The input slice must contain complete frames. For example, stereo input must hav
 ## Basic `i16` Resampling
 
 ```rust
-use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 
 let config = ResamplerConfig {
     input_rate: 48_000,
     output_rate: 16_000,
     channels: 1,
     quality: Quality::Balanced,
-    backend: Backend::Auto,
+    backend: FirBackend::Auto,
     max_input_frames_per_chunk: None,
 };
 
@@ -63,13 +63,13 @@ The `i16` path uses fixed-point Q15 coefficients and uses AVX2, AArch64 NEON, or
 You can feed input in chunks as long as you reuse the same resampler.
 
 ```rust
-# use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+# use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 # let config = ResamplerConfig {
 #     input_rate: 44_100,
 #     output_rate: 48_000,
 #     channels: 2,
 #     quality: Quality::Balanced,
-#     backend: Backend::Auto,
+#     backend: FirBackend::Auto,
 #     max_input_frames_per_chunk: None,
 # };
 # let mut resampler = Resampler::<f32>::new(config)?;
@@ -93,13 +93,13 @@ For simple use, passing a `Vec` is enough. The resampler reserves as needed.
 If you want to reserve ahead of time:
 
 ```rust
-# use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+# use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 # let config = ResamplerConfig {
 #     input_rate: 44_100,
 #     output_rate: 48_000,
 #     channels: 2,
 #     quality: Quality::Balanced,
-#     backend: Backend::Auto,
+#     backend: FirBackend::Auto,
 #     max_input_frames_per_chunk: None,
 # };
 # let resampler = Resampler::<f32>::new(config)?;
@@ -110,7 +110,7 @@ let mut output = Vec::with_capacity(resampler.required_output_capacity(input_fra
 
 `required_output_capacity` returns a conservative sample count, not a frame count.
 
-## Quality and Backend
+## Quality and FIR Backend
 
 `Quality` controls the FIR tap count:
 
@@ -118,7 +118,7 @@ let mut output = Vec::with_capacity(resampler.required_output_capacity(input_fra
 - `Balanced`: default tradeoff for general use.
 - `Best`: more taps, higher CPU cost.
 
-`Backend::Auto` is recommended. It selects the fastest supported backend at runtime:
+`FirBackend::Auto` is recommended. It selects the fastest supported FIR backend at runtime:
 
 - scalar fallback on all targets
 - AVX2/FMA on supported x86/x86_64 CPUs
@@ -126,7 +126,7 @@ let mut output = Vec::with_capacity(resampler.required_output_capacity(input_fra
 - AArch64 NEON on ARM CPUs
 - RISC-V RVV on `riscv64` builds compiled with `-C target-feature=+v`
 
-Backend dispatch is based on CPU features, not CPU vendor strings. RISC-V RVV selection is compile-time gated on stable Rust because portable runtime detection for the vector extension is not stable yet.
+FIR backend dispatch is based on CPU features, not CPU vendor strings. RISC-V RVV selection is compile-time gated on stable Rust because portable runtime detection for the vector extension is not stable yet.
 
 ## CLI
 

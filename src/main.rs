@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use fast_audio_resampler::{Backend, Error, Quality, Resampler, ResamplerConfig};
+use fast_audio_resampler::{Error, FirBackend, Quality, Resampler, ResamplerConfig};
 
 #[derive(Debug)]
 struct Args {
@@ -9,7 +9,7 @@ struct Args {
     output: PathBuf,
     rate: u32,
     quality: Quality,
-    backend: Backend,
+    backend: FirBackend,
 }
 
 fn main() {
@@ -81,7 +81,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let mut output = None;
     let mut rate = None;
     let mut quality = Quality::Balanced;
-    let mut backend = Backend::Auto;
+    let mut backend = FirBackend::Auto;
     let mut args = env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -121,14 +121,14 @@ fn parse_quality(value: &str) -> Result<Quality, Box<dyn std::error::Error>> {
     }
 }
 
-fn parse_backend(value: &str) -> Result<Backend, Box<dyn std::error::Error>> {
+fn parse_backend(value: &str) -> Result<FirBackend, Box<dyn std::error::Error>> {
     match value {
-        "auto" => Ok(Backend::Auto),
-        "scalar" => Ok(Backend::Scalar),
-        "avx2" => Ok(Backend::Avx2),
-        "avx512" => Ok(Backend::Avx512),
-        "neon" => Ok(Backend::Neon),
-        "rvv" => Ok(Backend::Rvv),
+        "auto" => Ok(FirBackend::Auto),
+        "scalar" => Ok(FirBackend::Scalar),
+        "avx2" => Ok(FirBackend::Avx2),
+        "avx512" => Ok(FirBackend::Avx512),
+        "neon" => Ok(FirBackend::Neon),
+        "rvv" => Ok(FirBackend::Rvv),
         _ => Err(format!("unknown backend: {value}").into()),
     }
 }
@@ -148,11 +148,11 @@ mod tests {
 
     #[test]
     fn parse_backend_accepts_neon() {
-        assert_eq!(parse_backend("neon").unwrap(), Backend::Neon);
+        assert_eq!(parse_backend("neon").unwrap(), FirBackend::Neon);
     }
 
     #[test]
     fn parse_backend_accepts_rvv() {
-        assert_eq!(parse_backend("rvv").unwrap(), Backend::Rvv);
+        assert_eq!(parse_backend("rvv").unwrap(), FirBackend::Rvv);
     }
 }

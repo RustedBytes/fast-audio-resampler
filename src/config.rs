@@ -1,4 +1,4 @@
-use crate::{Backend, Error, Result};
+use crate::{Error, FirBackend, Result};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Quality {
@@ -34,7 +34,7 @@ pub struct ResamplerConfig {
     pub output_rate: u32,
     pub channels: usize,
     pub quality: Quality,
-    pub backend: Backend,
+    pub backend: FirBackend,
     pub max_input_frames_per_chunk: Option<usize>,
 }
 
@@ -46,7 +46,7 @@ impl ResamplerConfig {
             output_rate,
             channels,
             quality: Quality::default(),
-            backend: Backend::Auto,
+            backend: FirBackend::Auto,
             max_input_frames_per_chunk: None,
         }
     }

@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::backend::{self, SelectedBackend};
+use crate::backend::{self, SelectedFirBackend};
 use crate::error::frame_alignment_error;
 use crate::filter::FilterBank;
 use crate::iir::PolyphaseIir2x;
@@ -18,7 +18,7 @@ enum SpecialRatio {
 pub struct ProcessStats {
     pub input_frames: usize,
     pub output_frames: usize,
-    pub backend: SelectedBackend,
+    pub backend: SelectedFirBackend,
 }
 
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ pub struct Resampler<T> {
 
 impl<T> Resampler<T> {
     #[inline]
-    pub fn selected_backend(&self) -> SelectedBackend {
+    pub fn selected_backend(&self) -> SelectedFirBackend {
         match &self.inner {
             Inner::F32(core) => core.backend,
             Inner::I16(core) => core.backend,
@@ -188,7 +188,7 @@ impl Resampler<i16> {
 #[derive(Debug, Clone)]
 struct CoreF32 {
     config: ResamplerConfig,
-    backend: SelectedBackend,
+    backend: SelectedFirBackend,
     filter: FilterBank,
     channels: Vec<RingBuffer<f32>>,
     total_input_frames: i64,
@@ -205,7 +205,7 @@ struct CoreF32 {
 #[derive(Debug, Clone)]
 struct CoreI16 {
     config: ResamplerConfig,
-    backend: SelectedBackend,
+    backend: SelectedFirBackend,
     filter: FilterBank,
     channels: Vec<RingBuffer<i16>>,
     total_input_frames: i64,
@@ -220,7 +220,7 @@ struct CoreI16 {
 }
 
 struct CommonInit<T: Copy + Default> {
-    backend: SelectedBackend,
+    backend: SelectedFirBackend,
     filter: FilterBank,
     channels: Vec<RingBuffer<T>>,
     step: f64,
@@ -1041,7 +1041,7 @@ fn f32_to_i16(sample: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Backend, Error, Quality};
+    use crate::{Error, FirBackend, Quality};
 
     fn cfg(input_rate: u32, output_rate: u32, channels: usize) -> ResamplerConfig {
         cfg_with_quality(input_rate, output_rate, channels, Quality::Fast)
@@ -1058,7 +1058,7 @@ mod tests {
             output_rate,
             channels,
             quality,
-            backend: Backend::Scalar,
+            backend: FirBackend::Scalar,
             max_input_frames_per_chunk: None,
         }
     }
@@ -1481,7 +1481,7 @@ mod tests {
             scalar.finish(&mut scalar_out).unwrap();
 
             let mut avx_cfg = cfg(44_100, 48_000, 1);
-            avx_cfg.backend = Backend::Avx2;
+            avx_cfg.backend = FirBackend::Avx2;
             let mut avx = Resampler::<i16>::new(avx_cfg).unwrap();
             let mut avx_out = Vec::new();
             avx.process(&input, &mut avx_out).unwrap();
@@ -1508,7 +1508,7 @@ mod tests {
             scalar.finish(&mut scalar_out).unwrap();
 
             let mut rvv_cfg = cfg(input_rate, output_rate, 1);
-            rvv_cfg.backend = Backend::Rvv;
+            rvv_cfg.backend = FirBackend::Rvv;
             let mut rvv = Resampler::<f32>::new(rvv_cfg).unwrap();
             let mut rvv_out = Vec::new();
             rvv.process(&input, &mut rvv_out).unwrap();
@@ -1535,7 +1535,7 @@ mod tests {
             scalar.finish(&mut scalar_out).unwrap();
 
             let mut rvv_cfg = cfg(input_rate, output_rate, 1);
-            rvv_cfg.backend = Backend::Rvv;
+            rvv_cfg.backend = FirBackend::Rvv;
             let mut rvv = Resampler::<i16>::new(rvv_cfg).unwrap();
             let mut rvv_out = Vec::new();
             rvv.process(&input, &mut rvv_out).unwrap();

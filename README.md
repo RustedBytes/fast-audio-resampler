@@ -9,14 +9,14 @@ The crate exposes a reusable library by default. WAV CLI support is optional and
 ## Usage
 
 ```rust
-use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 
 let config = ResamplerConfig {
     input_rate: 44_100,
     output_rate: 48_000,
     channels: 2,
     quality: Quality::Balanced,
-    backend: Backend::Auto,
+    backend: FirBackend::Auto,
     max_input_frames_per_chunk: None,
 };
 
@@ -39,7 +39,7 @@ Criterion benchmark results from `cargo bench --bench resampler` with `Balanced`
 
 ### x86_64
 
-| Format | Ratio | Channels | Backend | Median |
+| Format | Ratio | Channels | FIR Backend | Median |
 | --- | --- | ---: | --- | ---: |
 | `f32` | 8k -> 16k | 1 | scalar | 3.360 ms |
 | `i16` | 8k -> 16k | 1 | scalar | 3.271 ms |
@@ -48,11 +48,11 @@ Criterion benchmark results from `cargo bench --bench resampler` with `Balanced`
 | `f32` | 48k -> 44.1k | 2 | auto | 11.199 ms |
 | `i16` | 48k -> 44.1k | 2 | auto | 10.743 ms |
 
-Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.807 ms with `Backend::Auto`.
+Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.807 ms with `FirBackend::Auto`.
 
 ### AArch64 ARM
 
-| Format | Ratio | Channels | Backend | Median |
+| Format | Ratio | Channels | FIR Backend | Median |
 | --- | --- | ---: | --- | ---: |
 | `f32` | 8k -> 16k | 1 | scalar | 2.762 ms |
 | `i16` | 8k -> 16k | 1 | scalar | 2.730 ms |
@@ -60,7 +60,7 @@ Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.807 ms with
 | `i16` | 8k -> 16k | 1 | auto | 2.685 ms |
 | `i16` | 48k -> 44.1k | 2 | auto | 9.491 ms |
 
-Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.360 ms with `Backend::Auto`.
+Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.360 ms with `FirBackend::Auto`.
 
 ## Design Choices
 
@@ -74,7 +74,7 @@ Streaming `f32` 48k -> 44.1k stereo with 64-frame chunks measured 10.360 ms with
 - Keeps RISC-V RVV selection compile-time gated because stable Rust does not yet provide portable runtime detection for the vector extension.
 - Stores FIR coefficients in phase-major aligned storage for cache-friendly reads.
 - Uses per-channel ring buffers for streaming history, avoiding steady-state buffer shifting.
-- Keeps the public API stable while hiding backend and buffer details internally.
+- Keeps the public API stable while hiding FIR backend and buffer details internally.
 
 ## Complexity
 

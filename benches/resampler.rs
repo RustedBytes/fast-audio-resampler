@@ -1,7 +1,12 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 
-fn config(input_rate: u32, output_rate: u32, channels: usize, backend: Backend) -> ResamplerConfig {
+fn config(
+    input_rate: u32,
+    output_rate: u32,
+    channels: usize,
+    backend: FirBackend,
+) -> ResamplerConfig {
     config_with_quality(
         input_rate,
         output_rate,
@@ -15,7 +20,7 @@ fn config_with_quality(
     input_rate: u32,
     output_rate: u32,
     channels: usize,
-    backend: Backend,
+    backend: FirBackend,
     quality: Quality,
 ) -> ResamplerConfig {
     ResamplerConfig {
@@ -64,7 +69,7 @@ fn bench_resampler(c: &mut Criterion) {
         ("44k1_to_48k", 44_100, 48_000, Quality::Balanced),
         ("48k_to_44k1", 48_000, 44_100, Quality::Balanced),
     ];
-    let backends = [("scalar", Backend::Scalar), ("auto", Backend::Auto)];
+    let backends = [("scalar", FirBackend::Scalar), ("auto", FirBackend::Auto)];
 
     for (ratio_name, input_rate, output_rate, quality) in ratios {
         for channels in [1, 2] {
@@ -120,7 +125,7 @@ fn bench_resampler(c: &mut Criterion) {
     c.bench_function("f32/48k_to_44k1/2ch/auto/streaming_64_frames", |b| {
         b.iter(|| {
             let mut resampler =
-                Resampler::<f32>::new(config(48_000, 44_100, 2, Backend::Auto)).unwrap();
+                Resampler::<f32>::new(config(48_000, 44_100, 2, FirBackend::Auto)).unwrap();
             let mut output = Vec::new();
             for chunk in streaming_input.chunks(64 * 2) {
                 resampler.process(chunk, &mut output).unwrap();
@@ -155,7 +160,7 @@ fn bench_resampler(c: &mut Criterion) {
                         input_rate,
                         output_rate,
                         2,
-                        Backend::Auto,
+                        FirBackend::Auto,
                         quality,
                     ))
                     .unwrap();
@@ -178,7 +183,7 @@ fn bench_resampler(c: &mut Criterion) {
                         input_rate,
                         output_rate,
                         2,
-                        Backend::Auto,
+                        FirBackend::Auto,
                         quality,
                     ))
                     .unwrap();

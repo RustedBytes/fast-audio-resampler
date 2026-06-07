@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
+pub enum FirBackend {
     Auto,
     Scalar,
     Avx2,
@@ -9,7 +9,7 @@ pub enum Backend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectedBackend {
+pub enum SelectedFirBackend {
     Scalar,
     Avx2,
     Avx512,
@@ -17,7 +17,7 @@ pub enum SelectedBackend {
     Rvv,
 }
 
-impl SelectedBackend {
+impl SelectedFirBackend {
     #[inline]
     pub fn name(self) -> &'static str {
         match self {
@@ -30,15 +30,21 @@ impl SelectedBackend {
     }
 }
 
-impl Backend {
-    pub(crate) fn select(self) -> crate::Result<SelectedBackend> {
+#[deprecated(note = "use FirBackend; this backend only accelerates FIR dot products")]
+pub type Backend = FirBackend;
+
+#[deprecated(note = "use SelectedFirBackend; this backend only describes FIR dot products")]
+pub type SelectedBackend = SelectedFirBackend;
+
+impl FirBackend {
+    pub(crate) fn select(self) -> crate::Result<SelectedFirBackend> {
         match self {
             Self::Auto => Ok(auto_select()),
-            Self::Scalar => Ok(SelectedBackend::Scalar),
-            Self::Avx2 if avx2_available() => Ok(SelectedBackend::Avx2),
-            Self::Avx512 if avx512_available() => Ok(SelectedBackend::Avx512),
-            Self::Neon if neon_available() => Ok(SelectedBackend::Neon),
-            Self::Rvv if rvv_available() => Ok(SelectedBackend::Rvv),
+            Self::Scalar => Ok(SelectedFirBackend::Scalar),
+            Self::Avx2 if avx2_available() => Ok(SelectedFirBackend::Avx2),
+            Self::Avx512 if avx512_available() => Ok(SelectedFirBackend::Avx512),
+            Self::Neon if neon_available() => Ok(SelectedFirBackend::Neon),
+            Self::Rvv if rvv_available() => Ok(SelectedFirBackend::Rvv),
             Self::Avx2 => Err(crate::Error::UnsupportedBackend("avx2+fma")),
             Self::Avx512 => Err(crate::Error::UnsupportedBackend("avx512f")),
             Self::Neon => Err(crate::Error::UnsupportedBackend("neon")),
@@ -48,27 +54,27 @@ impl Backend {
 }
 
 #[inline]
-pub(crate) fn dot_f32(backend: SelectedBackend, samples: &[f32], coeffs: &[f32]) -> f32 {
+pub(crate) fn dot_f32(backend: SelectedFirBackend, samples: &[f32], coeffs: &[f32]) -> f32 {
     debug_assert_eq!(samples.len(), coeffs.len());
     match backend {
-        SelectedBackend::Scalar => scalar::dot_f32(samples, coeffs),
-        SelectedBackend::Avx2 => x86::dot_f32_avx2(samples, coeffs),
-        SelectedBackend::Avx512 => x86::dot_f32_avx512(samples, coeffs),
-        SelectedBackend::Neon => aarch64::dot_f32_neon(samples, coeffs),
-        SelectedBackend::Rvv => riscv64::dot_f32_rvv(samples, coeffs),
+        SelectedFirBackend::Scalar => scalar::dot_f32(samples, coeffs),
+        SelectedFirBackend::Avx2 => x86::dot_f32_avx2(samples, coeffs),
+        SelectedFirBackend::Avx512 => x86::dot_f32_avx512(samples, coeffs),
+        SelectedFirBackend::Neon => aarch64::dot_f32_neon(samples, coeffs),
+        SelectedFirBackend::Rvv => riscv64::dot_f32_rvv(samples, coeffs),
     }
 }
 
 #[inline]
-pub(crate) fn dot_i16_q15(backend: SelectedBackend, samples: &[i16], coeffs: &[i16]) -> i16 {
+pub(crate) fn dot_i16_q15(backend: SelectedFirBackend, samples: &[i16], coeffs: &[i16]) -> i16 {
     debug_assert_eq!(samples.len(), coeffs.len());
     let acc = match backend {
-        SelectedBackend::Scalar => scalar::dot_i16_q15(samples, coeffs),
-        SelectedBackend::Avx2 => x86::dot_i16_q15_avx2(samples, coeffs),
-        SelectedBackend::Avx512 if avx2_available() => x86::dot_i16_q15_avx2(samples, coeffs),
-        SelectedBackend::Avx512 => scalar::dot_i16_q15(samples, coeffs),
-        SelectedBackend::Neon => aarch64::dot_i16_q15_neon(samples, coeffs),
-        SelectedBackend::Rvv => riscv64::dot_i16_q15_rvv(samples, coeffs),
+        SelectedFirBackend::Scalar => scalar::dot_i16_q15(samples, coeffs),
+        SelectedFirBackend::Avx2 => x86::dot_i16_q15_avx2(samples, coeffs),
+        SelectedFirBackend::Avx512 if avx2_available() => x86::dot_i16_q15_avx2(samples, coeffs),
+        SelectedFirBackend::Avx512 => scalar::dot_i16_q15(samples, coeffs),
+        SelectedFirBackend::Neon => aarch64::dot_i16_q15_neon(samples, coeffs),
+        SelectedFirBackend::Rvv => riscv64::dot_i16_q15_rvv(samples, coeffs),
     };
     q15_acc_to_i16(acc)
 }
@@ -80,17 +86,17 @@ fn q15_acc_to_i16(acc: i64) -> i16 {
 }
 
 #[inline]
-fn auto_select() -> SelectedBackend {
+fn auto_select() -> SelectedFirBackend {
     if avx512_available() {
-        SelectedBackend::Avx512
+        SelectedFirBackend::Avx512
     } else if avx2_available() {
-        SelectedBackend::Avx2
+        SelectedFirBackend::Avx2
     } else if neon_available() {
-        SelectedBackend::Neon
+        SelectedFirBackend::Neon
     } else if rvv_available() {
-        SelectedBackend::Rvv
+        SelectedFirBackend::Rvv
     } else {
-        SelectedBackend::Scalar
+        SelectedFirBackend::Scalar
     }
 }
 
@@ -471,7 +477,7 @@ mod tests {
     #[cfg(not(target_arch = "aarch64"))]
     fn explicit_neon_is_unsupported_off_aarch64() {
         assert_eq!(
-            Backend::Neon.select(),
+            FirBackend::Neon.select(),
             Err(Error::UnsupportedBackend("neon"))
         );
     }
@@ -479,20 +485,23 @@ mod tests {
     #[test]
     #[cfg(not(all(target_arch = "riscv64", target_feature = "v")))]
     fn explicit_rvv_is_unsupported_without_rvv_target_feature() {
-        assert_eq!(Backend::Rvv.select(), Err(Error::UnsupportedBackend("rvv")));
+        assert_eq!(
+            FirBackend::Rvv.select(),
+            Err(Error::UnsupportedBackend("rvv"))
+        );
     }
 
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn auto_selects_neon_on_aarch64() {
-        assert_eq!(Backend::Auto.select().unwrap(), SelectedBackend::Neon);
-        assert_eq!(Backend::Neon.select().unwrap(), SelectedBackend::Neon);
+        assert_eq!(FirBackend::Auto.select().unwrap(), SelectedFirBackend::Neon);
+        assert_eq!(FirBackend::Neon.select().unwrap(), SelectedFirBackend::Neon);
     }
 
     #[test]
     #[cfg(all(target_arch = "riscv64", target_feature = "v"))]
     fn auto_selects_rvv_on_riscv64_with_v() {
-        assert_eq!(Backend::Auto.select().unwrap(), SelectedBackend::Rvv);
-        assert_eq!(Backend::Rvv.select().unwrap(), SelectedBackend::Rvv);
+        assert_eq!(FirBackend::Auto.select().unwrap(), SelectedFirBackend::Rvv);
+        assert_eq!(FirBackend::Rvv.select().unwrap(), SelectedFirBackend::Rvv);
     }
 }

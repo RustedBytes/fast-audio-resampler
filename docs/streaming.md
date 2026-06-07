@@ -7,7 +7,7 @@ Do not share one resampler across clients: the resampler owns filter history, II
 ## Session State
 
 ```rust
-use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 
 struct ClientSession {
     resampler: Resampler<i16>,
@@ -21,7 +21,7 @@ impl ClientSession {
             output_rate: 16_000,
             channels: 1,
             quality: Quality::Balanced,
-            backend: Backend::Auto,
+            backend: FirBackend::Auto,
             max_input_frames_per_chunk: Some(960),
         };
 
@@ -38,13 +38,13 @@ impl ClientSession {
 ## Processing Messages
 
 ```rust
-# use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+# use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 # let config = ResamplerConfig {
 #     input_rate: 48_000,
 #     output_rate: 16_000,
 #     channels: 1,
 #     quality: Quality::Balanced,
-#     backend: Backend::Auto,
+#     backend: FirBackend::Auto,
 #     max_input_frames_per_chunk: Some(960),
 # };
 # let mut resampler = Resampler::<i16>::new(config)?;
@@ -64,13 +64,13 @@ The input slice must contain complete interleaved frames. For stereo, the sample
 If your server uses fixed-size buffers, ask the resampler for a conservative capacity and use `process_into_slice`.
 
 ```rust
-# use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+# use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 # let config = ResamplerConfig {
 #     input_rate: 48_000,
 #     output_rate: 16_000,
 #     channels: 1,
 #     quality: Quality::Balanced,
-#     backend: Backend::Auto,
+#     backend: FirBackend::Auto,
 #     max_input_frames_per_chunk: Some(960),
 # };
 # let mut resampler = Resampler::<i16>::new(config)?;
@@ -90,13 +90,13 @@ If the output slice is too small, the call returns `Error::OutputTooSmall` and d
 Call `flush` when an audio stream ends and you want the final filter tail. For exact `8_000 <-> 16_000` conversions at `Quality::Fast`, this also drains any pending IIR downsampling pair.
 
 ```rust
-# use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+# use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 # let config = ResamplerConfig {
 #     input_rate: 48_000,
 #     output_rate: 16_000,
 #     channels: 1,
 #     quality: Quality::Balanced,
-#     backend: Backend::Auto,
+#     backend: FirBackend::Auto,
 #     max_input_frames_per_chunk: Some(960),
 # };
 # let mut resampler = Resampler::<i16>::new(config)?;
@@ -108,13 +108,13 @@ resampler.flush(&mut tail)?;
 Call `reset` when a connection starts a new independent audio stream or after a discontinuity.
 
 ```rust
-# use fast_audio_resampler::{Backend, Quality, Resampler, ResamplerConfig};
+# use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
 # let config = ResamplerConfig {
 #     input_rate: 48_000,
 #     output_rate: 16_000,
 #     channels: 1,
 #     quality: Quality::Balanced,
-#     backend: Backend::Auto,
+#     backend: FirBackend::Auto,
 #     max_input_frames_per_chunk: Some(960),
 # };
 # let mut resampler = Resampler::<i16>::new(config)?;
