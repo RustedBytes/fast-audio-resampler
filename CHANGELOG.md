@@ -4,6 +4,7 @@
 
 - Add IIR for faster resampling
 - Add RISC-V support with RVV
+- Add Python bindings
 
 ## v0.2.0
 
