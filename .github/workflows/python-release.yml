@@ -58,7 +58,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --locked --out dist
+          args: --out dist
 
       - name: Upload sdist artifact
         uses: actions/upload-artifact@v4
