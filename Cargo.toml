@@ -11,12 +11,18 @@ readme = "README.md"
 keywords = ["audio", "resampler", "simd", "neon", "wav"]
 categories = ["multimedia::audio", "algorithms"]
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [features]
 default = []
 cli = ["dep:hound"]
+python = ["dep:pyo3", "pyo3/abi3-py39"]
+python-extension = ["python", "pyo3/extension-module"]
 
 [dependencies]
 hound = { version = "3.5", optional = true }
+pyo3 = { version = "0.28.3", optional = true }
 
 [dev-dependencies]
 criterion = "0.8"

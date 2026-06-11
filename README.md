@@ -34,6 +34,21 @@ CLI:
 cargo run --features cli -- --in input.wav --out output.wav --rate 48000
 ```
 
+Python bindings are available through PyO3 for Python 3.9+:
+
+```bash
+maturin develop --features python-extension
+```
+
+```python
+from fast_audio_resampler import F32Resampler
+
+resampler = F32Resampler(44_100, 48_000, 2, quality="balanced", backend="auto")
+output, stats = resampler.process(input_samples)
+tail, tail_stats = resampler.finish()
+output.extend(tail)
+```
+
 ## Benchmarks
 
 Criterion benchmark results from `cargo bench --bench resampler`. Each one-shot case processes one second of input audio. Times are medians; lower is better.
@@ -172,3 +187,5 @@ Output size:
 
 - Default: library only, no WAV dependency.
 - `cli`: enables the WAV command-line tool and the optional `hound` dependency.
+- `python`: enables testable PyO3 bindings with the Python 3.9 stable ABI.
+- `python-extension`: enables `python` plus PyO3 extension-module linking for Python package builds.

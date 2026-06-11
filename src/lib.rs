@@ -12,6 +12,8 @@ mod error;
 mod filter;
 mod iir;
 mod iir_backend;
+#[cfg(feature = "python")]
+mod python;
 mod resampler;
 mod ring;
 
