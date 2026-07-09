@@ -54,10 +54,11 @@ output.extend(tail)
 
 Criterion benchmark results from `cargo bench --bench resampler`. Each one-shot case processes one second of input audio. Times are medians; lower is better.
 
-Exact `8k <-> 16k` conversions use two different engines depending on quality:
+Exact-ratio special conversions use compact engines where available:
 
-- `Quality::Fast`: polyphase IIR all-pass path.
-- `Quality::Balanced` and `Quality::Best`: FIR half-band path.
+- Exact `8k <-> 16k` at `Quality::Fast`: polyphase IIR all-pass path.
+- Exact `8k <-> 16k` at `Quality::Balanced` and `Quality::Best`: FIR half-band path.
+- Exact `24k -> 8k`: sparse FIR third-band path.
 - Other ratios: windowed-sinc polyphase FIR path.
 
 ### x86_64
@@ -142,6 +143,7 @@ AArch64 ARM benchmarks should be regenerated with the current IIR/FIR split. The
 
 - Uses windowed-sinc polyphase FIR resampling for arbitrary sample-rate ratios.
 - Uses FIR half-band filtering for exact `8000 <-> 16000` at `Quality::Balanced` and `Quality::Best`.
+- Uses sparse FIR third-band filtering for exact `24000 -> 8000`.
 - Uses a polyphase IIR all-pass path for exact `8000 <-> 16000` at `Quality::Fast`.
 - Supports `f32` and `i16` sample paths.
 - Uses runtime CPU feature detection instead of CPU vendor checks.
@@ -170,11 +172,13 @@ Construction:
 - Time: `O(P * T)`, where `P` is the number of polyphase coefficient phases.
 - Space: `O(P * T + C * T)` for FIR coefficient tables and per-channel history.
 - Exact `8k <-> 16k` `Quality::Fast` IIR construction uses fixed coefficient/state storage per channel instead of a phase table.
+- Exact `24k -> 8k` construction uses a compact sparse third-band coefficient table instead of a full phase table.
 
 Processing:
 
 - FIR time: `O(M * C * T)` scalar work.
 - IIR exact-ratio fast time: `O(M * C * S)`, where `S` is small and fixed.
+- Exact `24k -> 8k` sparse FIR time: `O(M * C * T_sparse)`, where zero-valued third-band taps are omitted.
 - FIR SIMD reduces the constant factor by processing multiple taps per instruction.
 - IIR stereo backends can process left/right all-pass lanes together where the target architecture supports it.
 - Streaming append is `O(N * C)`.

@@ -87,7 +87,7 @@ If the output slice is too small, the call returns `Error::OutputTooSmall` and d
 
 ## Stream Boundaries
 
-Call `flush` when an audio stream ends and you want the final filter tail. For exact `8_000 <-> 16_000` conversions at `Quality::Fast`, this also drains any pending IIR downsampling pair.
+Call `flush` when an audio stream ends and you want the final filter tail. For exact `8_000 <-> 16_000` conversions at `Quality::Fast`, this also drains any pending IIR downsampling pair. Exact `24_000 -> 8_000` conversions use the same FIR tail flushing behavior as other FIR paths.
 
 ```rust
 # use fast_audio_resampler::{FirBackend, Quality, Resampler, ResamplerConfig};
@@ -126,8 +126,7 @@ resampler.reset();
 For each WebSocket audio packet:
 
 - Append cost: `O(N * C)`
-- Resampling cost: `O(M * C * T)` for FIR paths; `O(M * C * S)` for the exact `8_000 <-> 16_000` IIR fast path
+- Resampling cost: `O(M * C * T)` for FIR paths; `O(M * C * T_sparse)` for the exact `24_000 -> 8_000` sparse FIR path; `O(M * C * S)` for the exact `8_000 <-> 16_000` IIR fast path
 - Ring-buffer discard: `O(C)`
 
-Where `N` is input frames, `M` is output frames, `C` is channel count, `T` is FIR taps for the selected quality, and `S` is the small fixed IIR all-pass stage count.
-
+Where `N` is input frames, `M` is output frames, `C` is channel count, `T` is FIR taps for the selected quality, `T_sparse` is the compact third-band tap count after omitting zero-valued taps, and `S` is the small fixed IIR all-pass stage count.

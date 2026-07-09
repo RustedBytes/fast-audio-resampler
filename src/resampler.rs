@@ -13,6 +13,7 @@ enum SpecialRatio {
     General,
     Up2,
     Down2,
+    Down3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -378,6 +379,10 @@ impl CoreF32 {
                 self.render_down2_frame_into(output);
                 return;
             }
+            SpecialRatio::Down3 => {
+                self.render_down3_frame_into(output);
+                return;
+            }
             SpecialRatio::General => {}
         }
 
@@ -534,6 +539,20 @@ impl CoreF32 {
             let mut acc = self.sample_at(channel, center) * half_band.center_coeff();
             for i in 0..coeffs.len() {
                 acc += self.sample_at(channel, center - offsets[i]) * coeffs[i];
+            }
+            output.push(acc);
+        }
+    }
+
+    fn render_down3_frame_into(&self, output: &mut Vec<f32>) {
+        let center = self.output_frames_emitted * 3;
+        let third_band = self.filter.third_band();
+        let offsets = third_band.side_offsets();
+        let coeffs = third_band.side_coeffs();
+        for channel in 0..self.config.channels {
+            let mut acc = self.sample_at(channel, center) * third_band.center_coeff();
+            for i in 0..coeffs.len() {
+                acc += self.sample_at(channel, center + offsets[i]) * coeffs[i];
             }
             output.push(acc);
         }
@@ -727,6 +746,10 @@ impl CoreI16 {
                 self.render_down2_frame_into(output);
                 return;
             }
+            SpecialRatio::Down3 => {
+                self.render_down3_frame_into(output);
+                return;
+            }
             SpecialRatio::General => {}
         }
 
@@ -896,6 +919,21 @@ impl CoreI16 {
         }
     }
 
+    fn render_down3_frame_into(&self, output: &mut Vec<i16>) {
+        let center = self.output_frames_emitted * 3;
+        let third_band = self.filter.third_band();
+        let offsets = third_band.side_offsets();
+        let coeffs = third_band.side_coeffs_q15();
+        for channel in 0..self.config.channels {
+            let mut acc =
+                self.sample_at(channel, center) as i64 * third_band.center_coeff_q15() as i64;
+            for i in 0..coeffs.len() {
+                acc += self.sample_at(channel, center + offsets[i]) as i64 * coeffs[i] as i64;
+            }
+            output.push(q15_acc_to_i16(acc));
+        }
+    }
+
     #[inline(always)]
     fn sample_at(&self, channel: usize, absolute_frame: i64) -> i16 {
         self.channels[channel].get(absolute_frame).unwrap_or(0)
@@ -1004,6 +1042,7 @@ fn init_common<T: Copy + Default>(config: ResamplerConfig) -> Result<CommonInit<
     let special_ratio = match (config.input_rate, config.output_rate) {
         (8_000, 16_000) => SpecialRatio::Up2,
         (16_000, 8_000) => SpecialRatio::Down2,
+        (24_000, 8_000) => SpecialRatio::Down3,
         _ => SpecialRatio::General,
     };
     let iir_backend = SelectedIirBackend::from_fir_backend(backend);
@@ -1083,6 +1122,7 @@ fn phase_index(
             }
         }
         SpecialRatio::Down2 => 0,
+        SpecialRatio::Down3 => 0,
         SpecialRatio::General => {
             let fraction = source_pos - center as f64;
             ((fraction * phases as f64) as usize).min(phases - 1)
@@ -1311,6 +1351,77 @@ mod tests {
     }
 
     #[test]
+    fn f32_third_band_down3_matches_chunked_and_one_shot() {
+        let frames = 721;
+        let input: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let left = ((i as f32) * 0.037).sin() * 0.5;
+                let right = ((i as f32) * 0.053).cos() * 0.5;
+                [left, right]
+            })
+            .collect();
+
+        let mut one =
+            Resampler::<f32>::new(cfg_with_quality(24_000, 8_000, 2, Quality::Balanced)).unwrap();
+        let mut one_out = Vec::new();
+        one.process(&input, &mut one_out).unwrap();
+        one.finish(&mut one_out).unwrap();
+
+        let mut chunked =
+            Resampler::<f32>::new(cfg_with_quality(24_000, 8_000, 2, Quality::Balanced)).unwrap();
+        let mut chunked_out = Vec::new();
+        for chunk in input.chunks(22) {
+            chunked.process(chunk, &mut chunked_out).unwrap();
+        }
+        chunked.finish(&mut chunked_out).unwrap();
+
+        assert_eq!(
+            one_out.len(),
+            expected_output_frames(frames, 24_000, 8_000) as usize * 2
+        );
+        assert_eq!(one_out.len(), chunked_out.len());
+        for (a, b) in one_out.iter().zip(chunked_out.iter()) {
+            assert!((a - b).abs() < 1.0e-6, "{a} != {b}");
+        }
+    }
+
+    #[test]
+    fn third_band_down3_flushes_to_ceiled_output_length() {
+        for input_frames in [1, 2, 3, 4, 721] {
+            let input: Vec<f32> = (0..input_frames)
+                .map(|i| ((i as f32) * 0.041).sin())
+                .collect();
+            let mut resampler =
+                Resampler::<f32>::new(cfg_with_quality(24_000, 8_000, 1, Quality::Balanced))
+                    .unwrap();
+            let mut output = Vec::new();
+            resampler.process(&input, &mut output).unwrap();
+            resampler.finish(&mut output).unwrap();
+            assert_eq!(
+                output.len(),
+                expected_output_frames(input_frames, 24_000, 8_000) as usize
+            );
+        }
+    }
+
+    #[test]
+    fn third_band_down3_filters_instead_of_taking_every_third_sample() {
+        let input: Vec<f32> = (0..720)
+            .map(|i| if i % 3 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let mut resampler =
+            Resampler::<f32>::new(cfg_with_quality(24_000, 8_000, 1, Quality::Balanced)).unwrap();
+        let mut output = Vec::new();
+        resampler.process(&input, &mut output).unwrap();
+        resampler.finish(&mut output).unwrap();
+        assert_eq!(output.len(), 240);
+        assert!(
+            output.iter().any(|&sample| sample < 0.5),
+            "output looks like naive every-third-sample decimation"
+        );
+    }
+
+    #[test]
     fn f32_polyphase_iir_roundtrip_preserves_low_frequency_shape_after_latency() {
         let input: Vec<f32> = (0..320).map(|i| ((i as f32) * 0.08).sin() * 0.5).collect();
         let mut up = Resampler::<f32>::new(cfg(8_000, 16_000, 1)).unwrap();
@@ -1468,6 +1579,41 @@ mod tests {
     }
 
     #[test]
+    fn i16_third_band_down3_matches_chunked_and_one_shot() {
+        let frames = 721;
+        let input: Vec<i16> = (0..frames)
+            .flat_map(|i| {
+                let left = (((i as f32) * 0.037).sin() * 12_000.0) as i16;
+                let right = (((i as f32) * 0.053).cos() * 12_000.0) as i16;
+                [left, right]
+            })
+            .collect();
+
+        let mut one =
+            Resampler::<i16>::new(cfg_with_quality(24_000, 8_000, 2, Quality::Balanced)).unwrap();
+        let mut one_out = Vec::new();
+        one.process(&input, &mut one_out).unwrap();
+        one.finish(&mut one_out).unwrap();
+
+        let mut chunked =
+            Resampler::<i16>::new(cfg_with_quality(24_000, 8_000, 2, Quality::Balanced)).unwrap();
+        let mut chunked_out = Vec::new();
+        for chunk in input.chunks(22) {
+            chunked.process(chunk, &mut chunked_out).unwrap();
+        }
+        chunked.finish(&mut chunked_out).unwrap();
+
+        assert_eq!(
+            one_out.len(),
+            expected_output_frames(frames, 24_000, 8_000) as usize * 2
+        );
+        assert_eq!(one_out.len(), chunked_out.len());
+        for (a, b) in one_out.iter().zip(chunked_out.iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 1, "{a} != {b}");
+        }
+    }
+
+    #[test]
     fn downsampling_filters_instead_of_dropping_every_other_sample() {
         let input: Vec<f32> = (0..320)
             .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
@@ -1520,6 +1666,23 @@ mod tests {
         assert!(
             output.iter().any(|&sample| sample < 8_000),
             "output looks like naive even-sample decimation"
+        );
+    }
+
+    #[test]
+    fn i16_third_band_downsampling_filters_instead_of_decimating() {
+        let input: Vec<i16> = (0..720)
+            .map(|i| if i % 3 == 0 { 16_000 } else { -16_000 })
+            .collect();
+        let mut resampler =
+            Resampler::<i16>::new(cfg_with_quality(24_000, 8_000, 1, Quality::Balanced)).unwrap();
+        let mut output = Vec::new();
+        resampler.process(&input, &mut output).unwrap();
+        resampler.finish(&mut output).unwrap();
+        assert_eq!(output.len(), 240);
+        assert!(
+            output.iter().any(|&sample| sample < 8_000),
+            "output looks like naive every-third-sample decimation"
         );
     }
 

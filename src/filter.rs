@@ -10,6 +10,7 @@ pub(crate) struct FilterBank {
     coeffs: AlignedVec<f32, 64>,
     coeffs_q15: AlignedVec<i16, 64>,
     half_band: Option<HalfBandFilter>,
+    third_band: Option<ThirdBandFilter>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,16 @@ pub(crate) struct HalfBandFilter {
     center_coeff_q15: i16,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ThirdBandFilter {
+    half_taps: usize,
+    side_offsets: Vec<i64>,
+    side_coeffs: AlignedVec<f32, 64>,
+    side_coeffs_q15: AlignedVec<i16, 64>,
+    center_coeff: f32,
+    center_coeff_q15: i16,
+}
+
 impl FilterBank {
     pub(crate) fn new(input_rate: u32, output_rate: u32, quality: Quality) -> Self {
         if matches!((input_rate, output_rate), (8_000, 16_000) | (16_000, 8_000)) {
@@ -35,6 +46,19 @@ impl FilterBank {
                 coeffs: AlignedVec::from_slice(&[]),
                 coeffs_q15: AlignedVec::from_slice(&[]),
                 half_band: Some(half_band),
+                third_band: None,
+            };
+        }
+
+        if matches!((input_rate, output_rate), (24_000, 8_000)) {
+            let third_band = ThirdBandFilter::new(quality);
+            return Self {
+                taps: third_band.taps(),
+                phases: quality.phases(),
+                coeffs: AlignedVec::from_slice(&[]),
+                coeffs_q15: AlignedVec::from_slice(&[]),
+                half_band: None,
+                third_band: Some(third_band),
             };
         }
 
@@ -95,6 +119,7 @@ impl FilterBank {
             coeffs: AlignedVec::from_slice(&coeffs),
             coeffs_q15: AlignedVec::from_slice(&coeffs_q15),
             half_band: None,
+            third_band: None,
         }
     }
 
@@ -129,6 +154,13 @@ impl FilterBank {
         self.half_band
             .as_ref()
             .expect("half-band filter is only available for exact 8 kHz <-> 16 kHz ratios")
+    }
+
+    #[inline(always)]
+    pub(crate) fn third_band(&self) -> &ThirdBandFilter {
+        self.third_band
+            .as_ref()
+            .expect("third-band filter is only available for exact 24 kHz -> 8 kHz ratios")
     }
 }
 
@@ -243,6 +275,96 @@ impl HalfBandFilter {
     }
 }
 
+impl ThirdBandFilter {
+    fn new(quality: Quality) -> Self {
+        let half_taps = quality.taps() / 2;
+        let taps = half_taps * 2 + 1;
+        let center = half_taps as i64;
+        let cutoff = 1.0 / 3.0;
+        let beta = match quality {
+            Quality::Fast => 5.0,
+            Quality::Balanced => 7.5,
+            Quality::Best => 10.0,
+        };
+        let denom = modified_bessel0(beta);
+        let mut coeffs = vec![0.0f64; taps];
+
+        for (tap, coeff) in coeffs.iter_mut().enumerate() {
+            let offset = tap as i64 - center;
+            if offset == 0 {
+                *coeff = cutoff;
+            } else if offset % 3 != 0 {
+                let x = offset as f64 * cutoff;
+                let sinc = cutoff * (PI * x).sin() / (PI * x);
+                let window_pos = (2.0 * tap as f64) / (taps as f64 - 1.0) - 1.0;
+                let window =
+                    modified_bessel0(beta * (1.0 - window_pos * window_pos).sqrt()) / denom;
+                *coeff = sinc * window;
+            }
+        }
+
+        let sum = coeffs.iter().sum::<f64>();
+        if sum != 0.0 {
+            for coeff in &mut coeffs {
+                *coeff /= sum;
+            }
+        }
+
+        let mut side_offsets = Vec::new();
+        let mut side_coeffs = Vec::new();
+        for (tap, &coeff) in coeffs.iter().enumerate() {
+            let offset = tap as i64 - center;
+            if offset != 0 && offset % 3 != 0 {
+                side_offsets.push(offset);
+                side_coeffs.push(coeff as f32);
+            }
+        }
+
+        let side_coeffs_q15: Vec<i16> = side_coeffs.iter().map(|&coeff| q15(coeff)).collect();
+        let center_coeff = coeffs[half_taps] as f32;
+        let center_coeff_q15 = q15(center_coeff);
+
+        Self {
+            half_taps,
+            side_offsets,
+            side_coeffs: AlignedVec::from_slice(&side_coeffs),
+            side_coeffs_q15: AlignedVec::from_slice(&side_coeffs_q15),
+            center_coeff,
+            center_coeff_q15,
+        }
+    }
+
+    #[inline(always)]
+    fn taps(&self) -> usize {
+        self.half_taps * 2 + 1
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_offsets(&self) -> &[i64] {
+        &self.side_offsets
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_coeffs(&self) -> &[f32] {
+        &self.side_coeffs
+    }
+
+    #[inline(always)]
+    pub(crate) fn side_coeffs_q15(&self) -> &[i16] {
+        &self.side_coeffs_q15
+    }
+
+    #[inline(always)]
+    pub(crate) fn center_coeff(&self) -> f32 {
+        self.center_coeff
+    }
+
+    #[inline(always)]
+    pub(crate) fn center_coeff_q15(&self) -> i16 {
+        self.center_coeff_q15
+    }
+}
+
 fn modified_bessel0(x: f64) -> f64 {
     let mut sum = 1.0;
     let mut term = 1.0;
@@ -288,5 +410,23 @@ mod tests {
         assert_eq!(bank.half_taps(), Quality::Fast.taps() / 2);
         assert_eq!(half_band.side_offsets().len(), Quality::Fast.taps() / 2);
         assert!((half_band.center_coeff() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn creates_compact_third_band_for_exact_24k_to_8k_ratio() {
+        let bank = FilterBank::new(24_000, 8_000, Quality::Fast);
+        let third_band = bank.third_band();
+        assert_eq!(bank.taps(), Quality::Fast.taps() + 1);
+        assert_eq!(bank.half_taps(), Quality::Fast.taps() / 2);
+        assert_eq!(third_band.side_offsets().len(), 16);
+        assert!(
+            third_band
+                .side_offsets()
+                .iter()
+                .all(|offset| offset % 3 != 0)
+        );
+        let sum = third_band.center_coeff() + third_band.side_coeffs().iter().copied().sum::<f32>();
+        assert!((sum - 1.0).abs() < 0.001);
+        assert!((third_band.center_coeff() - 1.0 / 3.0).abs() < 0.01);
     }
 }

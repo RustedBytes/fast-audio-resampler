@@ -66,6 +66,12 @@ fn bench_resampler(c: &mut Criterion) {
             8_000,
             Quality::Balanced,
         ),
+        (
+            "24k_to_8k_thirdband_balanced",
+            24_000,
+            8_000,
+            Quality::Balanced,
+        ),
         ("44k1_to_48k", 44_100, 48_000, Quality::Balanced),
         ("48k_to_44k1", 48_000, 44_100, Quality::Balanced),
     ];
@@ -147,6 +153,12 @@ fn bench_resampler(c: &mut Criterion) {
         (
             "16k_to_8k_halfband_balanced",
             16_000,
+            8_000,
+            Quality::Balanced,
+        ),
+        (
+            "24k_to_8k_thirdband_balanced",
+            24_000,
             8_000,
             Quality::Balanced,
         ),
